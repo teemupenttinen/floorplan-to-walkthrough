@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Home walkthrough</title>
+<!--
+  First-person walkthrough of a light-mapped model (scripts/web/bake_lightmaps.py writes the data).
+  Serve the folder with scripts/web/serve.py; opening the file directly does not work (fetch needs http).
+
+  Data: scene.json, mesh/<group>.glb (UV 1 = light map), lm/lm_<group>.png|ktx2, optional lm/al_<group>.* (albedo),
+  optional labels.json. ?data=<folder> loads from another folder.
+  Keys: WASD / arrows walk, Shift run, mouse look (click to lock), 1-9 spots, E door, F field of view,
+  V first person / dollhouse ([ and ] change the cut floor), M room labels, R measure, L look panel, H help.
+  Checks: ?at=x,y,z&view=yaw,pitch&fov=90 (model metres and degrees); window.__ready is true when loaded.
+-->
+<style>
+  :root {
+    --ink: #f2efe9; --dim: #b8b2a7; --panel: rgba(22, 21, 19, 0.8); --line: rgba(242, 239, 233, 0.18);
+    --accent: #d9c29a; --ground: #141311;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --mono: ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ground); color: var(--ink); font-family: var(--sans); }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  .hud { position: fixed; z-index: 2; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+         padding: 8px 12px; backdrop-filter: blur(6px); font-size: 13px; }
+  #where { top: max(12px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); font-family: var(--mono); color: var(--dim); }
+  #where b { color: var(--accent); font-weight: 500; font-family: var(--sans); }
+  #help { bottom: max(16px, env(safe-area-inset-bottom)); left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right));
+          color: var(--dim); line-height: 1.6; max-width: 920px; }
+  #help kbd { font-family: var(--mono); color: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+  #look { top: max(12px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); display: grid; gap: 6px; min-width: 220px; }
+  #look label { display: grid; grid-template-columns: 70px 1fr 56px; align-items: center; gap: 8px; }
+  #look output { font-family: var(--mono); text-align: right; color: var(--dim); }
+  #loading { position: fixed; inset: 0; display: grid; place-content: center; gap: 10px; z-index: 5; background: var(--ground); }
+  #loading .track { width: min(320px, 70vw); height: 3px; background: var(--line); }
+  #bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #status { font-size: 13px; color: var(--dim); text-align: center; }
+  #toast { position: fixed; left: 50%; top: 18%; transform: translateX(-50%); z-index: 4; padding: 8px 14px; border-radius: 6px;
+           background: var(--panel); border: 1px solid var(--line); opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast.on { opacity: 1; }
+  #tags { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
+  .tag { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font-size: 13px; padding: 3px 8px; border-radius: 4px;
+         background: var(--panel); border: 1px solid var(--line); }
+  .tag small { display: block; color: var(--dim); font-family: var(--mono); font-size: 11px; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: rgba(255,255,255,.7);
+           z-index: 2; pointer-events: none; display: none; }
+  body.locked #cross { display: block; }
+  [hidden] { display: none !important; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.8.3/build/index.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="view" tabindex="0"></canvas>
+<div id="tags"></div>
+<div id="cross"></div>
+<div id="where" class="hud"><b id="mode">1st person</b> · <span id="pos">–</span></div>
+<div id="look" class="hud" hidden>
+  <label>Exposure <input type="range" id="s-ev" min="-4" max="3" step="0.1"><output id="o-ev"></output></label>
+  <label>Auto <input type="checkbox" id="s-auto"><output></output></label>
+  <label>Bloom <input type="range" id="s-bloom" min="0" max="1" step="0.05"><output id="o-bloom"></output></label>
+  <label>Reflect <input type="range" id="s-env" min="0" max="1" step="0.05"><output id="o-env"></output></label>
+</div>
+<div id="help" class="hud">
+  <kbd>W A S D</kbd> walk · <kbd>Shift</kbd> run · click to look · <kbd>1</kbd>–<kbd>9</kbd> spots · <kbd>E</kbd> door ·
+  <kbd>F</kbd> <span id="fov">75°</span> · <kbd>V</kbd> dollhouse (<kbd>[</kbd> <kbd>]</kbd> floor) · <kbd>M</kbd> rooms ·
+  <kbd>R</kbd> measure · <kbd>L</kbd> look · <kbd>H</kbd> hide help
+</div>
+<div id="toast"></div>
+<div id="loading"><div class="track"><div id="bar"></div></div><div id="status">Loading</div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MeshBVH } from 'three-mesh-bvh';
+
+const P = new URLSearchParams(location.search);
+const BASE = (P.get('data') || '.').replace(/\/$/, '') + '/';
+const BASIS = 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/basis/';
+const $ = (id) => document.getElementById(id);
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { return null; } }
+let toastTimer = 0;
+function toast(text) { const t = $('toast'); t.textContent = text; t.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 1600); }
+
+// Model space is z up (Blender); three.js is y up: model (x, y, z) = three (x, z, -y).
+const M = (x, y, z) => new THREE.Vector3(x, z, -y);
+const toModel = (v) => [v.x, -v.z, v.y];
+// Model yaw (degrees, counter-clockwise from +x) -> camera rotation.y (YXZ order looks along -z at 0).
+const yawToThree = (deg) => THREE.MathUtils.degToRad(deg) - Math.PI / 2;
+const yawToModel = (rad) => THREE.MathUtils.radToDeg(rad + Math.PI / 2);
+
+const EYE = 1.6, KNEE = 0.3, HEAD = 1.75, RADIUS = 0.22, WALK = 1.4, RUN = 3.2, GRAVITY = 9.81;
+const AMBIENT = 0.5;     // light level of surfaces without a light map (glass-free decor, dense plants)
+
+// ---------------------------------------------------------------------------
+// Renderer, camera, post
+
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.AgXToneMapping;            // as the Cycles bake's AgX view transform
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xa9bccd);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 4000);
+camera.rotation.order = 'YXZ';
+const pmrem = new THREE.PMREMGenerator(renderer);
+const { RoomEnvironment } = await import('three/addons/environments/RoomEnvironment.js');
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;   // reflections only (see envFor)
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.2, 0.4, 0.9);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());       // tone mapping, exposure and sRGB happen here
+
+const FOVS = [75, 90];
+let fovIndex = Math.max(0, FOVS.indexOf(Number(P.get('fov') || store('wt-fov'))));
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  composer.setSize(w, h);
+  camera.aspect = w / h;
+  // FOVS degrees across the wider side of the screen (75 is about a 24 mm lens on full frame).
+  const across = THREE.MathUtils.degToRad(FOVS[fovIndex]);
+  camera.fov = camera.aspect >= 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(across / 2) / camera.aspect)) : FOVS[fovIndex];
+  camera.updateProjectionMatrix();
+  $('fov').textContent = FOVS[fovIndex] + '°';
+}
+resize();
+addEventListener('resize', resize);
+
+// ---------------------------------------------------------------------------
+// Look: exposure (eye adaptation like a game engine), bloom, reflections
+
+const LOOK = { key: 0.18, minGain: 0.25, maxGain: 16, speedUp: 2.0, speedDown: 1.5, EV_REF: -1 };
+const LOOK_DEFAULTS = { ev: -1, auto: true, bloom: 0.2, env: 0.1 };
+let look = { ...LOOK_DEFAULTS };
+try { look = { ...LOOK_DEFAULTS, ...JSON.parse(store('wt-look') || '{}') }; } catch { /* defaults */ }
+for (const k of ['ev', 'bloom', 'env']) if (P.has(k)) look[k] = Number(P.get(k));
+if (P.has('auto')) look.auto = P.get('auto') !== '0';
+
+const meter = new THREE.WebGLRenderTarget(48, 27, { type: THREE.FloatType });
+const meterBuf = new Float32Array(48 * 27 * 4);
+let gain = 1, gainTarget = 1, frame = 0;
+function adaptExposure(dt) {
+  // The frame is metered without its brightest quarter (the windows burn out, as in a real camera).
+  if (look.auto && frame % 12 === 0) {
+    renderer.setRenderTarget(meter);        // render targets get linear values: no tone mapping
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.readRenderTargetPixels(meter, 0, 0, 48, 27, meterBuf);
+    const lum = [];
+    for (let i = 0; i < meterBuf.length; i += 4) lum.push(0.2126 * meterBuf[i] + 0.7152 * meterBuf[i + 1] + 0.0722 * meterBuf[i + 2]);
+    lum.sort((a, b) => a - b);
+    const part = lum.slice(Math.floor(lum.length * 0.1), Math.floor(lum.length * 0.75));
+    const logMean = part.reduce((s, v) => s + Math.log(Math.max(v, 1e-4)), 0) / Math.max(1, part.length);
+    gainTarget = THREE.MathUtils.clamp(LOOK.key / Math.exp(logMean), LOOK.minGain, LOOK.maxGain);
+  }
+  const speed = gainTarget > gain ? LOOK.speedUp : LOOK.speedDown;
+  gain += (gainTarget - gain) * (1 - Math.exp(-speed * dt));
+  renderer.toneMappingExposure = (look.auto ? gain : 1) * 2 ** (look.ev - LOOK.EV_REF);
+}
+const materials = new Set();
+function applyLook(save = true) {
+  bloomPass.strength = look.bloom;
+  bloomPass.enabled = look.bloom > 0;
+  for (const m of materials) if (m.userData.baked) m.envMapIntensity = look.env;
+  $('s-ev').value = look.ev; $('o-ev').textContent = (look.ev > 0 ? '+' : '') + look.ev.toFixed(1) + ' EV';
+  $('s-auto').checked = look.auto;
+  $('s-bloom').value = look.bloom; $('o-bloom').textContent = look.bloom.toFixed(2);
+  $('s-env').value = look.env; $('o-env').textContent = look.env.toFixed(2);
+  if (save) store('wt-look', JSON.stringify(look));
+}
+for (const k of ['ev', 'bloom', 'env']) $('s-' + k).addEventListener('input', (e) => { look[k] = Number(e.target.value); applyLook(); });
+$('s-auto').addEventListener('change', (e) => { look.auto = e.target.checked; applyLook(); });
+
+// ---------------------------------------------------------------------------
+// Loading
+
+const status = (t) => { $('status').textContent = t; };
+const info = await (await fetch(BASE + 'scene.json', { cache: 'no-cache' })).json();
+const ktx2 = new KTX2Loader().setTranscoderPath(BASIS).detectSupport(renderer);
+const gltfLoader = new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+const texLoader = new THREE.TextureLoader();
+let done = 0;
+const total = info.groups.reduce((n, g) => n + 1 + (g.lightmap ? 1 : 0) + (g.albedo ? 1 : 0), 0);
+function tick() { done++; $('bar').style.width = (100 * done / Math.max(1, total)).toFixed(1) + '%'; status(`Loading ${done} / ${total}`); }
+
+async function loadTex(file) {
+  const url = BASE + file;
+  let t;
+  if (file.endsWith('.ktx2')) t = await ktx2.loadAsync(url);     // colour space comes from the file (-srgb)
+  else {
+    t = await texLoader.loadAsync(url);
+    t.flipY = false;                                              // glTF UV convention
+    t.colorSpace = THREE.SRGBColorSpace;                          // stored as sRGB(light / scale)
+  }
+  t.channel = 1;                                                  // UV 1 = the light map atlas
+  tick();
+  return t;
+}
+
+const WHITE = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+WHITE.needsUpdate = true;
+const nodeData = (o, key) => { for (let n = o; n; n = n.parent) if (n.userData && n.userData[key] !== undefined) return n.userData[key]; return undefined; };
+const matCache = new Map();
+
+function materialFor(mesh, group, tex) {
+  const lm = nodeData(mesh, 'lm');
+  const baked = !!(lm && mesh.geometry.attributes.uv1 && tex.light);
+  const src = mesh.material;
+  const key = src.uuid + '|' + (baked ? group.name : '-');
+  if (matCache.has(key)) return matCache.get(key);
+  let m;
+  const see = src.transparent || src.transmission > 0 || src.opacity < 1;
+  if (baked && tex.albedo) {
+    // Baked colour x baked light (procedural materials that glTF cannot carry).
+    m = new THREE.MeshBasicMaterial({ map: tex.albedo, lightMap: tex.light, lightMapIntensity: group.scale * Math.PI });
+  } else {
+    m = src.clone();
+    if (!see) {
+      // three.js divides the light map by pi (Lambert), so the stored scale is multiplied back.
+      m.lightMap = baked ? tex.light : WHITE;
+      m.lightMapIntensity = (baked ? group.scale : AMBIENT) * Math.PI;
+      m.userData.baked = true;
+      m.envMapIntensity = look.env;      // keep the environment small: it adds diffuse light too
+    }
+  }
+  materials.add(m);
+  matCache.set(key, m);
+  return m;
+}
+
+const world = new THREE.Group();
+scene.add(world);
+const collidable = [], doors = [];
+await Promise.all(info.groups.map(async (g) => {
+  const [gltf, light, albedo] = await Promise.all([
+    gltfLoader.loadAsync(BASE + g.file).then((r) => { tick(); return r; }),
+    g.lightmap ? loadTex(g.lightmap) : null,
+    g.albedo ? loadTex(g.albedo) : null,
+  ]);
+  const tex = { light, albedo };
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material = materialFor(o, g, tex);
+    if (!nodeData(o, 'door') && !nodeData(o, 'noCollide')) collidable.push(o);
+  });
+  world.add(gltf.scene);
+}));
+world.updateMatrixWorld(true);
+
+// ---------------------------------------------------------------------------
+// Collision: one BVH of the static model; each door has its own in its pivot's space.
+
+function collisionGeometry(meshes, inv) {
+  const geoms = [];
+  const mat = new THREE.Matrix4();
+  for (const m of meshes) {
+    const src = m.geometry.attributes.position;
+    const pos = new Float32Array(src.count * 3);
+    for (let i = 0; i < src.count; i++) { pos[3 * i] = src.getX(i); pos[3 * i + 1] = src.getY(i); pos[3 * i + 2] = src.getZ(i); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(m.geometry.index ? Array.from(m.geometry.index.array) : Array.from({ length: src.count }, (_, i) => i));
+    mat.copy(m.matrixWorld);
+    if (inv) mat.premultiply(inv);
+    g.applyMatrix4(mat);
+    geoms.push(g);
+  }
+  return geoms.length ? mergeGeometries(geoms, false) : null;
+}
+status('Building collision');
+const staticGeo = collisionGeometry(collidable);
+const bvh = new MeshBVH(staticGeo || new THREE.BoxGeometry(0.001, 0.001, 0.001), { maxDepth: 64 });
+
+// Doors: node extras { door: { hinge: [x, y, z], open, closed, baked } } (model metres, degrees about +z).
+// A rotation about model +z is the same angle about three.js +y.
+const doorNodes = [];
+world.traverse((o) => { if (o.userData && o.userData.door && !doorNodes.some((n) => n.getObjectById(o.id))) doorNodes.push(o); });
+doorNodes.forEach((o) => {        // collected first: attach() below changes the tree
+  const d = o.userData.door;
+  const pivot = new THREE.Group();
+  pivot.position.copy(M(...d.hinge));
+  world.add(pivot);
+  pivot.updateMatrixWorld(true);
+  pivot.attach(o);
+  const meshes = [];
+  o.traverse((c) => c.isMesh && meshes.push(c));
+  o.updateMatrixWorld(true);
+  const inv = pivot.matrixWorld.clone().invert();
+  const geo = collisionGeometry(meshes, inv);
+  const baked = d.baked ?? d.closed ?? 0;
+  doors.push({ node: o, pivot, meshes, baked, open: d.open ?? 90, closed: d.closed ?? 0, angle: baked,
+               target: baked, bvh: geo ? new MeshBVH(geo) : null });
+});
+const doorMeshes = doors.flatMap((d) => d.meshes);
+function updateDoors(dt) {
+  for (const d of doors) {
+    if (d.angle === d.target) continue;
+    const stepDeg = 150 * dt;
+    d.angle = Math.abs(d.target - d.angle) <= stepDeg ? d.target : d.angle + Math.sign(d.target - d.angle) * stepDeg;
+    d.pivot.rotation.y = THREE.MathUtils.degToRad(d.angle - d.baked);
+    d.pivot.updateMatrixWorld(true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Walking: a capsule from knee to head height slides along walls; a ray finds the floor (step height = KNEE).
+
+const player = { pos: new THREE.Vector3(), vy: 0, yaw: 0, pitch: 0 };
+const ray = new THREE.Ray(), seg = new THREE.Line3(), box = new THREE.Box3();
+const triPt = new THREE.Vector3(), capPt = new THREE.Vector3(), push = new THREE.Vector3();
+const inv4 = new THREE.Matrix4(), q = new THREE.Quaternion();
+
+function groundAt(p) {
+  ray.origin.set(p.x, p.y + KNEE, p.z);
+  ray.direction.set(0, -1, 0);
+  const hit = bvh.raycastFirst(ray, THREE.DoubleSide);
+  return hit ? hit.point.y : -Infinity;
+}
+function capsulePush(tree, s, out) {
+  // Sum of pushes that move the capsule (segment s, RADIUS) out of the triangles of a BVH, horizontally only.
+  box.makeEmpty().expandByPoint(s.start).expandByPoint(s.end).expandByScalar(RADIUS);
+  out.set(0, 0, 0);
+  tree.shapecast({
+    intersectsBounds: (b) => b.intersectsBox(box),
+    intersectsTriangle: (tri) => {
+      const d = tri.closestPointToSegment(s, triPt, capPt);
+      if (d >= RADIUS) return false;
+      push.subVectors(capPt, triPt);
+      const full = push.length();
+      push.y = 0;
+      const flat = push.length();
+      if (flat < 1e-6 || flat < 0.4 * full) return false;     // floors and ceilings are not walls
+      push.multiplyScalar((RADIUS - d) / flat);
+      s.start.add(push); s.end.add(push); out.add(push);
+      box.translate(push);
+      return false;
+    },
+  });
+  return out.lengthSq() > 0;
+}
+const moved = new THREE.Vector3(), local = new THREE.Line3();
+function pushOut(p) {
+  for (let iter = 0; iter < 4; iter++) {
+    seg.start.set(p.x, p.y + KNEE + RADIUS, p.z);
+    seg.end.set(p.x, p.y + HEAD - RADIUS, p.z);
+    let any = capsulePush(bvh, seg, moved);
+    if (any) p.add(moved);
+    for (const d of doors) {
+      if (!d.bvh) continue;
+      inv4.copy(d.pivot.matrixWorld).invert();
+      local.start.set(p.x, p.y + KNEE + RADIUS, p.z).applyMatrix4(inv4);
+      local.end.set(p.x, p.y + HEAD - RADIUS, p.z).applyMatrix4(inv4);
+      if (capsulePush(d.bvh, local, moved)) {
+        d.pivot.getWorldQuaternion(q);
+        p.add(moved.applyQuaternion(q).setY(0));
+        any = true;
+      }
+    }
+    if (!any) break;
+  }
+}
+
+const keys = new Set();
+function placeEye(eye, yawDeg, pitchDeg = 0) {
+  const e = M(...eye);
+  player.pos.set(e.x, e.y - EYE, e.z);
+  player.yaw = yawToThree(yawDeg);
+  player.pitch = THREE.MathUtils.degToRad(pitchDeg);
+  player.vy = 0;
+}
+const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
+function step(dt) {
+  const k = (c) => keys.has(c) ? 1 : 0;
+  const f = k('KeyW') + k('ArrowUp') - k('KeyS') - k('ArrowDown');
+  const r = k('KeyD') - k('KeyA');
+  const turn = k('ArrowLeft') - k('ArrowRight');
+  player.yaw += turn * 1.8 * dt;
+  fwd.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  right.set(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  move.set(0, 0, 0).addScaledVector(fwd, f).addScaledVector(right, r);
+  if (move.lengthSq() > 0) move.normalize().multiplyScalar((keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN : WALK) * dt);
+  const n = Math.max(1, Math.ceil(move.length() / 0.08));        // small sub-steps: no tunnelling through walls
+  move.divideScalar(n);
+  for (let i = 0; i < n; i++) { player.pos.add(move); pushOut(player.pos); }
+  if (move.lengthSq() === 0) pushOut(player.pos);                 // a door may have swung into the capsule
+  const g = groundAt(player.pos);
+  if (g >= player.pos.y - 0.02) { player.pos.y = g; player.vy = 0; }
+  else {
+    player.vy -= GRAVITY * dt;
+    player.pos.y = Math.max(g, player.pos.y + player.vy * dt);
+    if (player.pos.y === g) player.vy = 0;
+  }
+  if (player.pos.y < -200) placeEye(info.start.loc, info.start.yaw);
+  camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
+  camera.rotation.set(player.pitch, player.yaw, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Views: first person or dollhouse (orbit, the model cut above the current floor)
+
+const floors = (info.floors || [0]).map(Number).sort((a, b) => a - b);
+let view = 'first', cutFloor = 0;
+const orbit = new OrbitControls(camera, canvas);
+orbit.enabled = false;
+orbit.enableDamping = true;
+function floorIndexAt(yThree) { let i = 0; floors.forEach((z, k) => { if (z <= yThree + 0.5) i = k; }); return i; }
+function setCut() {
+  const next = floors[cutFloor + 1];
+  const cut = next !== undefined ? next - 0.15 : floors[cutFloor] + 2.6;
+  renderer.clippingPlanes = view === 'doll' ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), cut)] : [];
+}
+function setView(v) {
+  view = v;
+  $('mode').textContent = v === 'doll' ? 'Dollhouse' : '1st person';
+  orbit.enabled = v === 'doll';
+  if (v === 'doll') {
+    if (document.pointerLockElement) document.exitPointerLock();
+    cutFloor = floorIndexAt(player.pos.y);
+    orbit.target.set(player.pos.x, floors[cutFloor] + 1, player.pos.z);
+    camera.position.copy(orbit.target).add(new THREE.Vector3(7, 11, 9));
+    camera.lookAt(orbit.target);
+    orbit.update();
+  }
+  setCut();
+}
+
+// ---------------------------------------------------------------------------
+// Room labels (M), measure (R), doors (E)
+
+let labels = [], showLabels = false;
+if (info.labels) {
+  try { labels = (await (await fetch(BASE + info.labels, { cache: 'no-cache' })).json()).rooms || []; } catch { labels = []; }
+}
+const tagEls = labels.map((r) => {
+  const el = document.createElement('div');
+  el.className = 'tag';
+  el.innerHTML = `${r.name}${r.size ? `<small>${r.size}</small>` : ''}`;
+  el.hidden = true;
+  $('tags').appendChild(el);
+  return { el, p: M(...r.at), visible: false };
+});
+const proj = new THREE.Vector3(), toTag = new THREE.Vector3();
+function updateTags() {
+  for (const t of tagEls) {
+    if (!showLabels) { t.el.hidden = true; continue; }
+    proj.copy(t.p).project(camera);
+    const dist = camera.position.distanceTo(t.p);
+    let ok = proj.z < 1 && Math.abs(proj.x) < 1.05 && Math.abs(proj.y) < 1.05 && dist < 30;
+    if (ok && frame % 10 === 0) {        // hidden behind walls? (checked every few frames)
+      toTag.subVectors(t.p, camera.position).normalize();
+      ray.origin.copy(camera.position); ray.direction.copy(toTag);
+      const hit = bvh.raycastFirst(ray, THREE.DoubleSide);
+      t.visible = !hit || hit.distance > dist - 0.3;
+    }
+    ok = ok && (view === 'doll' || t.visible);
+    t.el.hidden = !ok;
+    if (ok) { t.el.style.left = ((proj.x + 1) / 2 * innerWidth) + 'px'; t.el.style.top = ((1 - proj.y) / 2 * innerHeight) + 'px'; }
+  }
+}
+
+let measuring = false, measurePts = [];
+const measureLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd27a, depthTest: false }));
+measureLine.renderOrder = 10;
+scene.add(measureLine);
+const measureTag = document.createElement('div');
+measureTag.className = 'tag'; measureTag.hidden = true;
+$('tags').appendChild(measureTag);
+const caster = new THREE.Raycaster();
+function surfaceAt(ndc) {
+  caster.setFromCamera(ndc, camera);
+  const hit = bvh.raycastFirst(caster.ray, THREE.DoubleSide);
+  const dh = caster.intersectObjects(doorMeshes, false)[0];
+  if (dh && (!hit || dh.distance < hit.distance)) return dh.point.clone();
+  return hit ? hit.point.clone() : null;
+}
+function measureClick(ndc) {
+  const p = surfaceAt(ndc);
+  if (!p) return;
+  if (measurePts.length >= 2) measurePts = [];
+  measurePts.push(p);
+  measureLine.geometry.setFromPoints(measurePts.length === 1 ? [p, p] : measurePts);
+  if (measurePts.length === 2) {
+    const d = measurePts[0].distanceTo(measurePts[1]);
+    const a = toModel(measurePts[0]), b = toModel(measurePts[1]);
+    measureTag.innerHTML = `${d.toFixed(2)} m<small>Δz ${(b[2] - a[2]).toFixed(2)} m</small>`;
+  }
+}
+function updateMeasure() {
+  measureLine.visible = measuring && measurePts.length > 0;
+  measureTag.hidden = !(measuring && measurePts.length === 2);
+  if (measureTag.hidden) return;
+  proj.copy(measurePts[0]).add(measurePts[1]).multiplyScalar(0.5).project(camera);
+  measureTag.style.left = ((proj.x + 1) / 2 * innerWidth) + 'px';
+  measureTag.style.top = ((1 - proj.y) / 2 * innerHeight) + 'px';
+}
+
+function useDoor() {
+  caster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  caster.far = 3;
+  const hit = caster.intersectObjects(doorMeshes, false)[0];
+  caster.far = Infinity;
+  const d = hit && doors.find((x) => x.meshes.includes(hit.object));
+  if (!d) { toast('No door in front'); return; }
+  d.target = Math.abs(d.target - d.open) < 1 ? d.closed : d.open;
+}
+
+// ---------------------------------------------------------------------------
+// Input
+
+canvas.addEventListener('click', (e) => {
+  if (view !== 'first') return;
+  if (measuring) {
+    const ndc = document.pointerLockElement ? new THREE.Vector2(0, 0)
+      : new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    measureClick(ndc);
+    return;
+  }
+  if (!document.pointerLockElement) canvas.requestPointerLock?.();
+});
+document.addEventListener('pointerlockchange', () => document.body.classList.toggle('locked', !!document.pointerLockElement));
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== canvas || view !== 'first') return;
+  player.yaw -= e.movementX * 0.0022;
+  player.pitch = THREE.MathUtils.clamp(player.pitch - e.movementY * 0.0022, -1.45, 1.45);
+});
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  keys.add(e.code);
+  if (e.repeat) return;
+  const spot = /^Digit([1-9])$/.exec(e.code);
+  if (spot && info.spots && info.spots[spot[1] - 1]) {
+    const s = info.spots[spot[1] - 1];
+    if (view !== 'first') setView('first');
+    placeEye(s.loc, s.yaw);
+    toast(s.name);
+  }
+  switch (e.code) {
+    case 'KeyE': useDoor(); break;
+    case 'KeyF': fovIndex = (fovIndex + 1) % FOVS.length; store('wt-fov', String(FOVS[fovIndex])); resize(); break;
+    case 'KeyV': setView(view === 'first' ? 'doll' : 'first'); break;
+    case 'BracketRight': if (view === 'doll') { cutFloor = Math.min(floors.length - 1, cutFloor + 1); setCut(); } break;
+    case 'BracketLeft': if (view === 'doll') { cutFloor = Math.max(0, cutFloor - 1); setCut(); } break;
+    case 'KeyM': showLabels = !showLabels; toast(showLabels ? 'Room labels on' : 'Room labels off'); break;
+    case 'KeyR': measuring = !measuring; measurePts = []; toast(measuring ? 'Measure: click two surfaces' : 'Measure off'); break;
+    case 'KeyL': $('look').hidden = !$('look').hidden; if (!$('look').hidden && document.pointerLockElement) document.exitPointerLock(); break;
+    case 'KeyH': $('help').hidden = !$('help').hidden; break;
+  }
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+// ---------------------------------------------------------------------------
+// Start
+
+placeEye(info.start.loc, info.start.yaw);
+if (P.has('at')) {
+  const at = P.get('at').split(',').map(Number);
+  const v = (P.get('view') || `${info.start.yaw},0`).split(',').map(Number);
+  placeEye(at, v[0], v[1] || 0);
+}
+applyLook(false);
+$('loading').remove();
+const clock = new THREE.Clock();
+function loop() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  updateDoors(dt);
+  if (view === 'first') step(dt); else orbit.update();
+  adaptExposure(dt);
+  composer.render(dt);
+  updateTags();
+  updateMeasure();
+  const m = toModel(camera.position);
+  $('pos').textContent = `x ${m[0].toFixed(2)} y ${m[1].toFixed(2)} z ${m[2].toFixed(2)} · yaw ${((yawToModel(player.yaw) % 360 + 360) % 360).toFixed(0)}°`;
+  if (++frame === 3) window.__ready = true;
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

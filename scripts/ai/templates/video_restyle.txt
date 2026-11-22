@@ -1,0 +1,1 @@
+Restyle @motion into a real photographic video with the look of @start: keep every camera movement, every wall, door, window and piece of furniture exactly where it is in @motion; change only the surfaces and the light to look real (materials as in @start and @dev). No added objects, no people, no text, no cuts.

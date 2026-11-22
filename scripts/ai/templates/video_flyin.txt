@@ -1,0 +1,1 @@
+A smooth drone flight from the first frame to the last frame along the path of @motion: {path}, then settles. Constant gentle speed, no shake, no cuts, no morphing; the building stays exactly as in the first and last frame. About {seconds} seconds. Photoreal, {light_short}, no people, no text.

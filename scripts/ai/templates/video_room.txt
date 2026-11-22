@@ -1,0 +1,1 @@
+A slow, steady real estate gimbal move from the first frame to the last frame, exactly as in @motion (eases in and out, no shake, no zoom). The room, the furniture and the light do not change. About {seconds} seconds. Photoreal, {light_short}, no people, no text.

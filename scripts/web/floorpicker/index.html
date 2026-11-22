@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Choose your floor</title>
+<!--
+  "Choose your floor" sales page from recorded engine footage.
+
+  Files next to this page:
+    data.json              build_picker_data.py (walk keys, rooms, bands, tower camera, frame info)
+    tower.webp             the start view: the first settled frame of the fly-ins (or a path-traced still of it)
+    fly/fly<N>.mp4         the drone flight into floor N; fly/back<N>.mp4 the same frames reversed
+    frames/lo/0000.webp    the walk at 12 fps, 800 px (loaded first, so the whole walk can be scrubbed)
+    frames/hi/0000.webp    the same at full size (loaded around the playhead)
+    fly/ai/fly<N>.mp4      optional AI-restyled flights (?ai or ?ai=2,3)
+  Serve with: python3 ../serve.py . 8770
+
+  Flow: start view with floor bands -> panel "Choose your floor" -> fly clip -> the last fly frame is the same pose
+  as a walk frame, so the page continues on the walk frames (canvas) -> room pills and hotspots walk between
+  room stops -> "Back" walks to the entry pose and plays the reversed clip -> title and "Start again".
+  Checks: ?floor=2&room=bedroom  ?hover=2  ?debug  ?lang=de
+-->
+<style>
+  :root {
+    --ink: #fbfaf7; --dim: rgba(251, 250, 247, 0.72); --glass: rgba(20, 22, 24, 0.34); --edge: rgba(255, 255, 255, 0.26);
+    --accent: #f2d9a6; --ground: #0d0e0f;
+    --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ground); color: var(--ink); font-family: var(--sans); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .layer { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .35s ease; }
+  .layer.on { opacity: 1; }
+  .layer.cut { transition: none; }
+  #bands { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2; transition: opacity .4s; }
+  #bands.hidden { opacity: 0; pointer-events: none; }
+  .band .glow { fill: rgba(255, 255, 255, 0.06); stroke: none; transition: fill .25s; }
+  .band .edge { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.5; vector-effect: non-scaling-stroke; transition: stroke .25s; }
+  .band .hit { fill: transparent; pointer-events: all; cursor: pointer; }
+  .band line { stroke: rgba(255, 255, 255, 0.6); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0; transition: opacity .25s; }
+  .band text { fill: var(--ink); font-size: 30px; font-weight: 300; opacity: 0; transition: opacity .25s; }
+  .band.hover .glow { fill: rgba(242, 217, 166, 0.28); }
+  .band.hover .edge { stroke: var(--accent); }
+  .band.hover line, .band.hover text { opacity: 1; }
+  .glass { background: var(--glass); border: 1px solid var(--edge); backdrop-filter: blur(14px) saturate(1.2);
+           -webkit-backdrop-filter: blur(14px) saturate(1.2); border-radius: 14px; }
+  #panel { position: fixed; z-index: 3; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom));
+           width: min(340px, calc(100vw - 48px)); padding: 20px 22px; transition: opacity .4s, transform .4s; }
+  #panel.hidden { opacity: 0; transform: translateY(12px); pointer-events: none; }
+  #panel h2 { margin: 0 0 10px; font-size: 13px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+  #num { font-size: 64px; font-weight: 200; line-height: 1; display: inline-block; }
+  #num.tick { animation: tick .35s ease; }
+  @keyframes tick { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  #unit { font-size: 18px; margin-top: 6px; }
+  #meta { font-size: 13px; color: var(--dim); margin-top: 4px; min-height: 1.3em; }
+  #floors { display: flex; gap: 6px; margin-top: 14px; }
+  #floors button, .pill { border: 1px solid var(--edge); background: rgba(255, 255, 255, .08); border-radius: 999px; padding: 6px 13px; font-size: 13px; }
+  #floors button[aria-pressed="true"], .pill.cur { background: var(--ink); color: #111; }
+  #enter { margin-top: 16px; width: 100%; padding: 11px; border-radius: 10px; border: 0; background: var(--ink); color: #111; font-weight: 600; }
+  .lang { position: fixed; z-index: 4; top: max(18px, env(safe-area-inset-top)); right: max(24px, env(safe-area-inset-right)); display: flex; gap: 4px; }
+  .lang button { background: none; border: 0; color: var(--dim); font-size: 12px; letter-spacing: .1em; padding: 4px 6px; }
+  .lang button[aria-pressed="true"] { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
+  #brand { position: fixed; z-index: 3; top: max(18px, env(safe-area-inset-top)); left: max(24px, env(safe-area-inset-left));
+           font-size: 13px; letter-spacing: .22em; text-transform: uppercase; transition: opacity .4s; }
+  #brand.hidden { opacity: 0; }
+  #caption { position: fixed; z-index: 3; left: max(24px, env(safe-area-inset-left)); bottom: max(24px, env(safe-area-inset-bottom));
+             right: max(24px, env(safe-area-inset-right)); padding: 16px 18px; max-width: 760px; opacity: 0; transform: translateY(10px);
+             transition: opacity .4s, transform .4s; pointer-events: none; }
+  #caption.on { opacity: 1; transform: none; pointer-events: auto; }
+  #cap-floor { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+  #cap-room { font-size: 26px; font-weight: 300; margin: 4px 0 12px; }
+  #cap-room span { font-size: 15px; color: var(--dim); margin-left: 12px; }
+  #rooms { display: flex; flex-wrap: wrap; gap: 6px; }
+  #spots { position: fixed; inset: 0; z-index: 2; pointer-events: none; }
+  .spot { position: absolute; left: 0; top: 0; pointer-events: auto; display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 8px;
+          opacity: 0; transition: opacity .3s; border-radius: 999px; }
+  .spot i { width: 10px; height: 10px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 4px rgba(255, 255, 255, .25); }
+  #back, #restart { position: fixed; z-index: 4; top: max(18px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+                    padding: 8px 16px; border-radius: 999px; opacity: 0; pointer-events: none; transition: opacity .3s; }
+  #back.on, #restart.on { opacity: 1; pointer-events: auto; }
+  #finale { position: fixed; inset: 0; z-index: 3; display: grid; place-content: center; text-align: center; pointer-events: none; }
+  #finale-title { font-size: clamp(40px, 9vw, 120px); font-weight: 200; line-height: 1.05; letter-spacing: .02em; }
+  #finale-title span { display: inline-block; opacity: 0; transform: translateY(20px); transition: opacity .6s, transform .6s; }
+  #finale.on #finale-title span { opacity: 1; transform: none; }
+  #finale.out { opacity: 0; transition: opacity .4s; }
+  #loader { position: fixed; inset: 0; z-index: 10; display: grid; place-content: center; background: var(--ground); transition: opacity .8s; }
+  #loader.out { opacity: 0; pointer-events: none; }
+  #pct { font-size: 14px; letter-spacing: .2em; color: var(--dim); }
+  #pct::after { content: " %"; }
+  body.busy .pill, body.busy .spot { pointer-events: none; }
+  #dbg { position: fixed; z-index: 9; left: 8px; top: 50%; font: 12px ui-monospace, Menlo, monospace; background: rgba(0,0,0,.6); padding: 4px 6px; }
+  @media (max-width: 640px) { #panel { left: 16px; right: 16px; width: auto; bottom: 16px; } #num { font-size: 48px; } }
+</style>
+</head>
+<body class="loading">
+<img id="tower" class="layer on" alt="" src="tower.webp">
+<div id="clips"></div>
+<canvas id="walk" class="layer"></canvas>
+<svg id="bands" preserveAspectRatio="xMidYMid slice"></svg>
+<div id="spots"></div>
+<div id="brand">Home</div>
+<div class="lang"><button type="button" data-lang="en">EN</button><button type="button" data-lang="de">DE</button></div>
+<section id="panel" class="glass">
+  <h2 data-t="choose"></h2>
+  <div id="num">1</div>
+  <div id="unit"></div>
+  <div id="meta"></div>
+  <div id="floors"></div>
+  <button id="enter" type="button"></button>
+</section>
+<section id="caption" class="glass"><div id="cap-floor"></div><div id="cap-room"></div><div id="rooms"></div></section>
+<button id="back" class="glass" type="button" data-t="back"></button>
+<button id="restart" class="glass" type="button" data-t="restart"></button>
+<div id="finale"><div id="finale-title"></div></div>
+<div id="loader"><div id="pct">0</div></div>
+
+<script type="module">
+// ---- configuration --------------------------------------------------------------------------------
+// Floors: n = band id and clip id; rooms = [page room key, walk time (s) of its stop]. The first room is where the
+// fly-in ends (its walk_t). Texts per language: [title, one line; {roomkey} is replaced with that room's area].
+const FLOORS = [
+  { n: '1', rooms: [['living', 3], ['kitchen', 20]], en: ['Floor 1', 'Living room {living} · kitchen'], de: ['Etage 1', 'Wohnzimmer {living} · Küche'] },
+  { n: '2', rooms: [['bedroom', 40], ['study', 60]], en: ['Floor 2', 'Bedroom {bedroom} · study'], de: ['Etage 2', 'Schlafzimmer {bedroom} · Arbeitszimmer'] },
+];
+// Room names per language (falls back to the label in data.json).
+const NAMES = {
+  en: { living: 'Living room', kitchen: 'Kitchen', bedroom: 'Bedroom', study: 'Study' },
+  de: { living: 'Wohnzimmer', kitchen: 'Küche', bedroom: 'Schlafzimmer', study: 'Arbeitszimmer' },
+};
+const TEXT = {
+  en: { choose: 'Choose your floor', enter: 'Enter floor {n}', back: '← Back to the house', restart: 'Start again', floorN: 'Floor {n}', title: 'Welcome home' },
+  de: { choose: 'Wählen Sie Ihre Etage', enter: 'Etage {n} betreten', back: '← Zurück zum Haus', restart: 'Neu starten', floorN: 'Etage {n}', title: 'Willkommen zuhause' },
+};
+const MIN_DEPTH = 1.0;     // hotspots nearer than this (m) to the camera are not shown
+const MAX_SPOTS = 3;
+
+// ---- setup ----------------------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { return null; } }
+let lang = params.get('lang') || store('picker-lang') || ((navigator.language || '').slice(0, 2) in TEXT ? navigator.language.slice(0, 2) : 'en');
+if (!TEXT[lang]) lang = 'en';
+let D, N, state = 'house', busy = false, floor = FLOORS[0], room = null, curT = 0, focusT = 0;
+const canvas = $('walk'), ctx = canvas.getContext('2d');
+const dbg = params.has('debug') ? Object.assign(document.body.appendChild(document.createElement('div')), { id: 'dbg' }) : null;
+
+// ---- walk frames: small ones first, sharp ones around the playhead -------------------------------
+const lo = [], hi = new Map(), inflight = new Set();
+let loOrder = [], loCount = 0, drawn = '';
+const url = (tier, i) => `frames/${tier}/${String(i).padStart(4, '0')}.webp`;
+function fetchImg(tier, i) {
+  const key = tier + i; inflight.add(key);
+  const im = new Image(); im.decoding = 'async';
+  const done = () => {
+    inflight.delete(key);
+    if (im.naturalWidth) { if (tier === 'lo') { lo[i] = im; loCount++; } else hi.set(i, im); drawn = ''; }
+    pump();
+  };
+  im.onload = () => im.decode().catch(() => {}).then(done); im.onerror = done; im.src = url(tier, i);
+}
+function pump() {
+  if (!D) return;
+  const centres = [Math.round(curT * D.fps), Math.round(focusT * D.fps)];
+  while (inflight.size < 8) {
+    let job = null;
+    for (const c of centres) for (let d = 0; d < 36 && !job; d++) for (const i of [c + d, c - d])
+      if (!job && i >= 0 && i < N && !lo[i] && !inflight.has('lo' + i)) job = ['lo', i];
+    for (const c of centres) for (let d = 0; d < 30 && !job; d++) for (const i of [c + d, c - d])
+      if (!job && i >= 0 && i < N && !hi.has(i) && !inflight.has('hi' + i)) job = ['hi', i];
+    while (!job && loOrder.length) { const i = loOrder.shift(); if (!lo[i] && !inflight.has('lo' + i)) job = ['lo', i]; }
+    if (!job) break;
+    fetchImg(...job);
+  }
+  for (const i of hi.keys()) if (centres.every((c) => Math.abs(i - c) > 180)) hi.delete(i);   // memory
+}
+function best(i) {
+  if (hi.has(i)) return hi.get(i);
+  if (lo[i]) return lo[i];
+  for (let d = 1; d < 128; d++) { if (lo[i - d]) return lo[i - d]; if (lo[i + d]) return lo[i + d]; }
+  return null;
+}
+function cover() {
+  const s = Math.max(canvas.width / D.width, canvas.height / D.height);
+  return { s, ox: (canvas.width - D.width * s) / 2, oy: (canvas.height - D.height * s) / 2 };
+}
+function draw() {
+  const f = Math.max(0, Math.min(curT * D.fps, N - 1)), i = Math.floor(f), a = f - i;
+  const A = best(i), B = a > 0.02 && i + 1 < N ? best(i + 1) : null;
+  const key = `${i}|${a.toFixed(2)}|${A && A.src}|${B && B.src}|${canvas.width}x${canvas.height}`;
+  if (!A || key === drawn) return;
+  drawn = key;
+  const { s, ox, oy } = cover(), w = D.width * s, h = D.height * s;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.globalAlpha = 1; ctx.drawImage(A, ox, oy, w, h);
+  if (B && B !== A) { ctx.globalAlpha = a; ctx.drawImage(B, ox, oy, w, h); ctx.globalAlpha = 1; }   // cross-fade between frames
+}
+const frameReady = (t) => { const i = Math.round(t * D.fps); return !!(hi.get(i) || lo[i]); };
+const until = (cond) => new Promise((res) => { const f = () => cond() ? res() : setTimeout(f, 50); f(); });
+
+// ---- cameras: the recorder's Hermite curve and a pinhole projection (model metres, z up) ----------
+function hermite(K, t, idx) {
+  const n = K.length, Pt = (j) => K[j][idx];
+  if (t <= K[0][0]) return Pt(0);
+  if (t >= K[n - 1][0]) return Pt(n - 1);
+  let i = 0; while (i < n - 2 && K[i + 1][0] <= t) i++;
+  const same = (p, q) => Math.max(...p.map((v, k) => Math.abs(v - q[k]))) <= 1e-4;
+  const tan = (j) => (j === 0 || j === n - 1 || same(Pt(j), Pt(j - 1)) || same(Pt(j + 1), Pt(j))) ? [0, 0, 0]
+    : Pt(j + 1).map((v, k) => (v - Pt(j - 1)[k]) / (K[j + 1][0] - K[j - 1][0]));
+  const h = K[i + 1][0] - K[i][0], s = (t - K[i][0]) / h, s2 = s * s, s3 = s2 * s, m0 = tan(i), m1 = tan(i + 1);
+  return Pt(i).map((p0, k) => p0 * (2 * s3 - 3 * s2 + 1) + m0[k] * h * (s3 - 2 * s2 + s) + Pt(i + 1)[k] * (-2 * s3 + 3 * s2) + m1[k] * h * (s3 - s2));
+}
+const sub = (a, b) => a.map((v, k) => v - b[k]), dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit = (a) => { const l = Math.hypot(...a); return a.map((v) => v / l); };
+function cam(e, l, hfov) {
+  const f = unit(sub(l, e)), r = unit(cross(f, [0, 0, 1])), u = cross(r, f), th = Math.tan((hfov || D.hfov) * Math.PI / 360);
+  return { e, f, r, u, th, tv: th * D.height / D.width };
+}
+function toImage(c, p) {          // -> pixel in the recorded frame, and depth
+  const d = sub(p, c.e), z = dot(d, c.f);
+  if (z < 0.05) return null;
+  return { x: D.width / 2 * (1 + dot(d, c.r) / z / c.th), y: D.height / 2 * (1 - dot(d, c.u) / z / c.tv), z };
+}
+function toScreen(q) {            // object-fit: cover, as the layers
+  const s = Math.max(innerWidth / D.width, innerHeight / D.height);
+  return { x: (innerWidth - D.width * s) / 2 + q.x * s, y: (innerHeight - D.height * s) / 2 + q.y * s };
+}
+function hull(pts) {              // convex hull, monotone chain
+  const p = pts.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  const turn = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [], upper = [];
+  for (const q of p) { while (lower.length >= 2 && turn(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+  for (const q of p.reverse()) { while (upper.length >= 2 && turn(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+// ---- floor bands on the start view -----------------------------------------------------------------
+function buildBands() {
+  const svg = $('bands');
+  svg.setAttribute('viewBox', `0 0 ${D.width} ${D.height}`);
+  svg.innerHTML = '';
+  const c = cam(...D.fly.tower, D.fly.hfov);
+  for (const fl of FLOORS) {
+    const b = (D.bands || []).find((x) => String(x.id) === fl.n);
+    if (!b) continue;
+    let pts;
+    if (b.box) {
+      const [x0, y0, z0, x1, y1, z1] = b.box;
+      const corners = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+      pts = hull(corners.map((p) => toImage(c, p)).filter(Boolean));
+    } else pts = b.poly.map((p) => toImage(c, p)).filter(Boolean);
+    if (pts.length < 3) continue;
+    const d = 'M' + pts.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' L') + ' Z';
+    const right = Math.max(...pts.map((p) => p.x)), mid = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'band');
+    g.innerHTML = `<path class="glow" d="${d}"/><path class="edge" d="${d}"/><path class="hit" d="${d}"/>
+      <line x1="${right + 18}" x2="${right + 70}" y1="${mid}" y2="${mid}"/><text x="${right + 82}" y="${mid + 10}">${b.label ?? fl.n}</text>`;
+    g.addEventListener('mouseenter', () => pick(fl));
+    g.addEventListener('click', () => { pick(fl); enterFloor(); });
+    fl.el = g; svg.appendChild(g);
+  }
+  svg.addEventListener('mouseleave', () => FLOORS.forEach((f) => f.el && f.el.classList.remove('hover')));
+  $('floors').innerHTML = FLOORS.map((f) => `<button type="button" data-floor="${f.n}">${f.n}</button>`).join('');
+  $('floors').querySelectorAll('button').forEach((bt) => bt.onclick = () => pick(FLOORS.find((f) => f.n === bt.dataset.floor)));
+}
+function pick(fl, force) {
+  FLOORS.forEach((f) => f.el && f.el.classList.toggle('hover', f === fl));
+  $('floors').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.floor === fl.n)));
+  if (fl === floor && !force) return;
+  floor = fl;
+  const num = $('num'); num.classList.remove('tick'); void num.offsetWidth; num.classList.add('tick');
+  num.textContent = fl.n;
+  $('unit').textContent = (fl[lang] || fl.en)[0];
+  $('meta').textContent = fill((fl[lang] || fl.en)[1]);
+  $('enter').textContent = TEXT[lang].enter.replace('{n}', fl.n);
+}
+
+// ---- text ------------------------------------------------------------------------------------------
+const area = (key) => (D && D.rooms[key] && D.rooms[key].area) || '';
+const fill = (s) => s.replace(/\{(\w+)\}/g, (_, k) => area(k));
+const roomName = (k) => (NAMES[lang] && NAMES[lang][k]) || (D && D.rooms[k] && D.rooms[k].label) || k;
+function setLang(l) {
+  lang = l; store('picker-lang', l); document.documentElement.lang = l;
+  document.querySelectorAll('.lang button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === l)));
+  document.querySelectorAll('[data-t]').forEach((el) => { el.textContent = TEXT[l][el.dataset.t]; });
+  $('finale-title').innerHTML = [...TEXT[l].title].map((ch, i) => ch === ' ' ? '<br>' : `<span style="transition-delay:${i * 45}ms">${ch}</span>`).join('');
+  if (D) { pick(floor, true); if (room) showCaption(); if (state === 'floor' && !busy) buildSpots(); }
+}
+
+// ---- videos ------------------------------------------------------------------------------------------
+// ?ai: AI-restyled flights from fly/ai/ (all floors, or ?ai=2,3). Their last frame is not exactly the walk pose,
+// so the page holds the video's last frame until the next move instead of cutting to the walk frames.
+const AI = new Set(params.has('ai') ? ((params.get('ai') || FLOORS.map((f) => f.n).join(',')).split(',')) : []);
+const clipSrc = (id, n) => AI.has(n) ? `fly/ai/${id}.mp4` : `fly/${id}.mp4`;
+const videos = {}, loaded = {};
+async function grab(src, onPct) {
+  const res = await fetch(src);
+  if (!res.ok) throw new Error(res.status);
+  const len = +res.headers.get('content-length') || 0;
+  if (!len || !res.body || !onPct) return res.blob();
+  const reader = res.body.getReader(), parts = []; let got = 0;
+  for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; onPct(got / len); }
+  return new Blob(parts, { type: 'video/mp4' });
+}
+async function loadClips() {
+  const ids = FLOORS.flatMap((f) => [['fly' + f.n, f.n], ['back' + f.n, f.n]]);
+  for (const [id] of ids) {
+    const v = document.createElement('video');
+    v.className = 'layer'; v.muted = true; v.playsInline = true; v.preload = 'auto';
+    $('clips').appendChild(v); videos[id] = v;
+    let r; loaded[id] = new Promise((res) => (r = res)); loaded[id].done = r;
+  }
+  let first = true;
+  for (const [id, n] of ids) {
+    const v = videos[id], src = clipSrc(id, n);
+    // whole clip in memory first (instant, seekable playback); if the download fails, let the video stream it
+    const blob = await grab(src, first ? (p) => { $('pct').textContent = Math.min(99, Math.floor(p * 100)); } : null).catch(() => null);
+    v.src = blob ? URL.createObjectURL(blob) : src; v.load();
+    await new Promise((res) => { if (v.readyState >= 2) res(); else { v.addEventListener('loadeddata', res, { once: true }); v.addEventListener('error', res, { once: true }); } });
+    if (first) { reveal(); first = false; }
+    loaded[id].done();
+  }
+}
+let revealed = false;
+function reveal() {
+  if (revealed) return;
+  revealed = true;
+  $('pct').textContent = 100;
+  setTimeout(() => { $('loader').classList.add('out'); document.body.classList.remove('loading'); setTimeout(() => $('loader').remove(), 900); }, 250);
+}
+let shown = $('tower');
+function show(el, instant) {
+  if (el === shown) return;
+  const old = shown; shown = el;
+  if (instant) { el.classList.add('cut'); old.classList.add('cut'); }
+  el.classList.add('on');
+  // the new layer is drawn first, then the old one goes, so the background never shows through
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    old.classList.remove('on');
+    setTimeout(() => { el.classList.remove('cut'); old.classList.remove('cut'); }, 400);
+  }));
+}
+async function rewind(v) {
+  v.pause(); v.currentTime = 0;
+  await new Promise((res) => v.readyState >= 2 && !v.seeking ? res() : v.addEventListener('seeked', res, { once: true }));
+}
+async function play(v, onStart) {
+  await v.play().catch(() => {});
+  if (onStart) onStart(v);
+  await new Promise((res) => v.addEventListener('ended', res, { once: true }));
+}
+
+// ---- walk moves ------------------------------------------------------------------------------------
+const ease = (u) => u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+function walkTo(t1) {
+  const t0 = curT, dist = Math.abs(t1 - t0);
+  if (dist < 0.01) return Promise.resolve();
+  focusT = t1; pump();
+  const dur = Math.min(6.5, Math.max(1.4, 1.1 + dist / 5.5)) * 1000, start = performance.now();
+  return new Promise((res) => {
+    const stepFn = (now) => {
+      const u = Math.min(1, (now - start) / dur);
+      curT = t0 + (t1 - t0) * ease(u);
+      if (u < 1) requestAnimationFrame(stepFn); else { curT = t1; res(); }
+    };
+    requestAnimationFrame(stepFn);
+  });
+}
+
+// ---- states ------------------------------------------------------------------------------------------
+let held = null;      // an AI video held on its last frame
+function setBusy(b) { busy = b; document.body.classList.toggle('busy', b); }
+async function enterFloor(instant) {
+  if (busy || state !== 'house') return;
+  const clip = D.fly && D.fly.clips[floor.n];
+  if (!clip) return;
+  setBusy(true); state = 'flying';
+  const fl = floor, entry = clip.walk_t;
+  $('panel').classList.add('hidden'); $('bands').classList.add('hidden');
+  curT = focusT = entry; drawn = ''; pump();
+  $('back').classList.add('on');
+  if (!instant) {
+    const v = videos['fly' + fl.n];
+    await loaded['fly' + fl.n]; await rewind(v);
+    show(v);                                         // start view -> the clip's first frame (the same picture)
+    await play(v);
+    if (AI.has(fl.n)) held = v;
+  }
+  await until(() => frameReady(entry));
+  if (!held) { draw(); show(canvas, instant); }     // the clip's last frame -> the same pose in the walk
+  room = fl.rooms[0][0]; state = 'floor'; setBusy(false);
+  showCaption(); buildSpots();
+}
+async function goRoom(key) {
+  if (busy || state !== 'floor' || key === room) return;
+  const r = floor.rooms.find((x) => x[0] === key);
+  if (!r) return;
+  setBusy(true); room = key; showCaption(); hideSpots();
+  if (held) { held = null; draw(); show(canvas); await new Promise((res) => setTimeout(res, 450)); }
+  await walkTo(r[1]);
+  setBusy(false); buildSpots();
+}
+async function backToHouse() {
+  if (busy || state !== 'floor') return;
+  setBusy(true); state = 'flying'; hideSpots(); $('caption').classList.remove('on'); $('brand').classList.add('hidden');
+  if (!held) await walkTo(D.fly.clips[floor.n].walk_t);    // a held AI frame is already the clip's start
+  held = null;
+  const v = videos['back' + floor.n];
+  await loaded['back' + floor.n]; await rewind(v);
+  show(v); await new Promise((res) => setTimeout(res, 380));
+  await play(v, (vv) => setTimeout(() => $('finale').classList.add('on'), Math.max(0, ((vv.duration || 3) - 2.4) * 1000)));
+  show($('tower'));
+  $('back').classList.remove('on'); $('restart').classList.add('on');
+  state = 'end'; room = null; setBusy(false);
+}
+function restart() {
+  if (state !== 'end') return;
+  $('restart').classList.remove('on');
+  const f = $('finale'); f.classList.add('out'); setTimeout(() => f.classList.remove('on', 'out'), 500);
+  state = 'house'; $('brand').classList.remove('hidden');
+  setTimeout(() => { $('panel').classList.remove('hidden'); $('bands').classList.remove('hidden'); pick(floor, true); }, 350);
+}
+
+// ---- caption and hotspots ----------------------------------------------------------------------------
+function showCaption() {
+  $('cap-floor').textContent = TEXT[lang].floorN.replace('{n}', floor.n);
+  $('cap-room').innerHTML = `${roomName(room)}${area(room) ? `<span>${area(room)}</span>` : ''}`;
+  $('rooms').innerHTML = floor.rooms.map(([k]) => `<button class="pill${k === room ? ' cur' : ''}" type="button" data-room="${k}">${roomName(k)}</button>`).join('');
+  $('caption').classList.add('on');
+}
+function buildSpots() {
+  if (state !== 'floor') { $('spots').innerHTML = ''; return; }
+  const c = cam(hermite(D.keys, curT, 1), hermite(D.keys, curT, 2));
+  const list = floor.rooms.filter(([k]) => k !== room && D.rooms[k]).map(([k]) => {
+    const q = toImage(c, D.rooms[k].at);
+    if (!q || q.z < MIN_DEPTH || q.x < 60 || q.x > D.width - 60 || q.y < 80 || q.y > D.height - 80) return null;
+    const p = toScreen(q);
+    if (p.x < 90 || p.x > innerWidth - 90 || p.y < 110 || p.y > innerHeight - 120) return null;
+    return { k, p, z: q.z };
+  }).filter(Boolean).sort((a, b) => a.z - b.z).reduce((kept, s) => {     // nearest first, no overlaps
+    if (kept.length < MAX_SPOTS && kept.every((o) => Math.abs(o.p.x - s.p.x) > 150 || Math.abs(o.p.y - s.p.y) > 46)) kept.push(s);
+    return kept;
+  }, []);
+  // Note: the hotspot is not occlusion-tested; pick room anchors (labels.json "at") that are visible from the stops.
+  $('spots').innerHTML = list.map(({ k, p }) =>
+    `<button class="glass spot" type="button" data-room="${k}" style="transform:translate(${p.x.toFixed(0)}px,${p.y.toFixed(0)}px) translate(-50%,-50%)"><i></i><span>${roomName(k)}</span></button>`).join('');
+  requestAnimationFrame(() => document.querySelectorAll('.spot').forEach((s) => { s.style.opacity = 1; }));
+}
+function hideSpots() { document.querySelectorAll('.spot').forEach((s) => { s.style.opacity = 0; }); }
+
+// ---- loop and start ----------------------------------------------------------------------------------
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2), w = Math.min(innerWidth * dpr, 2560);
+  canvas.width = Math.round(w); canvas.height = Math.round(w * innerHeight / innerWidth); drawn = '';
+  if (state === 'floor' && !busy) buildSpots();
+}
+function tick() {
+  if (state === 'floor' || state === 'flying') draw();
+  pump();
+  if (dbg) dbg.textContent = `${state} · t ${curT.toFixed(2)} · lo ${loCount}/${N} · hi ${hi.size}`;
+  requestAnimationFrame(tick);
+}
+(async function start() {
+  D = await (await fetch('data.json', { cache: 'no-cache' })).json();
+  N = D.frames;
+  const seen = new Set();          // coarse to fine: every 64th frame first, then the gaps
+  for (let stepN = 64; stepN >= 1; stepN /= 2) for (let i = 0; i < N; i += stepN) if (!seen.has(i)) { seen.add(i); loOrder.push(i); }
+  buildBands(); setLang(lang); pick(FLOORS[0], true); FLOORS.forEach((f) => f.el && f.el.classList.remove('hover'));
+  resize(); addEventListener('resize', resize);
+  document.querySelectorAll('.lang button').forEach((b) => b.onclick = () => setLang(b.dataset.lang));
+  $('enter').onclick = () => enterFloor(); $('back').onclick = backToHouse; $('restart').onclick = restart;
+  document.addEventListener('click', (e) => { const b = e.target.closest('[data-room]'); if (b) goRoom(b.dataset.room); });
+  addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') backToHouse();
+    if (state === 'house' && /^[1-9]$/.test(e.key)) { const f = FLOORS.find((x) => x.n === e.key); if (f) pick(f); }
+    if (state === 'house' && e.key === 'Enter') enterFloor();
+  });
+  tick();
+  loadClips();
+  // Checks: ?hover=2 shows a floor band hovered; ?floor=2&room=bedroom goes straight to a room (no fly clip).
+  if (params.has('hover')) { const f = FLOORS.find((x) => x.n === params.get('hover')); if (f) pick(f); }
+  if (params.has('floor')) {
+    const f = FLOORS.find((x) => x.n === params.get('floor'));
+    if (f) {
+      reveal(); pick(f); await enterFloor(true);
+      if (params.has('room')) await goRoom(params.get('room'));
+    }
+  }
+})();
+</script>
+</body>
+</html>
