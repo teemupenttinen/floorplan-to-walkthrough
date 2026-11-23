@@ -12,14 +12,42 @@ looks it up. Two tiers worked; start with the first.
 Files: `scripts/web/bake_lightmaps.py` (Blender), `scripts/web/viewer/index.html`, `scripts/web/serve.py`.
 
 ```sh
-Blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py            # all groups
-Blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py -- --albedo # procedural materials
-Blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py -- --only floor2 --reuse
+blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py -- --config bake_config.py
+blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py            # all groups
+blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py -- --albedo # procedural materials
+blender -b model.blend --python-exit-code 1 --python scripts/web/bake_lightmaps.py -- --only floor2 --reuse
 python3 scripts/web/serve.py web 8768                                                          # http://localhost:8768
 ```
 
-Edit the CONFIG block at the top of the bake script: `GROUPS` (collections and texels per metre), the glass
-and lamp material prefixes, `INTERIOR_BOXES` for light portals, `DOORS`, `START`, `SPOTS`, `FLOORS`.
+Put the project's settings in a config file (`--config bake_config.py`, see docs/00-interfaces.md) rather than
+editing the CONFIG block: `GROUPS` (collections and texels per metre), the glass and lamp material prefixes,
+`INTERIOR_BOXES` for light portals, `FLOORS`, `LOOK`. Doors, the start and the spots come from the model (`door`
+properties, the "Start" and "Spot <name>" empties); `DOORS`, `START` and `SPOTS` in the config add to or override
+them. With `LAMPS_OFF`, the bake hides every light object except the sun and darkens the lamp materials.
+
+### The fastest path
+
+For a first walkable version of a listing (one storey, about 120 m²):
+
+| Step | Time (M4 Pro, Blender 5.2) |
+|---|---|
+| Read the listing, convert the photos, trace the plan (plan probe + overlay) | about 30 min |
+| Build | 2 s |
+| Textures graded to the photos (`scripts/textures/make_textures.py`, 12 sets) | 15 s |
+| Bake: one interior group at 40 px/m and 768 samples, one site group at 5 px/m | about 3 min |
+| Re-export after a material change (`--reuse`) | 5 s |
+| Headless check per view (`scripts/web/shot.mjs`) | 5 s |
+
+Flat colours, one interior atlas and no Unreal: walkable in under an hour. A one-storey house put all its objects in
+one 4096 px atlas with about a third empty (outside wall faces and slabs dominate); an "interior" and a low-density
+"envelope" group would shrink it.
+
+### Texture maps on the way to glTF
+
+The bake exports the GLB in the same session as the bake, so it resets two things first (`prepare_export()`): the
+Mapping node scale (box UVs are already in texture tiles; the exporter would also write the 1/tile scale as
+`KHR_texture_transform` and scale the texture twice) and the normal map strength (set to 0 for the bake). glTF does
+not carry Hue/Saturation or Mix tint nodes: grade the image files instead (`scripts/textures/make_textures.py`).
 
 ## v1: baked colour × light
 
@@ -96,6 +124,10 @@ const envBRDF = (F0, rough, NdotV) => {
 
 ## Matching the engine look
 
+**Tone mapping per project.** `LOOK` in the bake config goes to `scene.json`: `{"tone": "neutral", "ev": 0}` kept
+warm oak, an orange sauna and white walls as they are in listing photos, where AgX (the default, as the bake's view
+transform) turned them pastel and grey. Light maps hold linear light, so the display tone map need not match the bake's.
+
 The browser version should look like the Unreal walkthrough people saw first. What closed the gap:
 
 - **Exposure:** −1 EV default on a game-engine-like EV scale; eye adaptation from a small read-back (48 × 27) every
@@ -145,3 +177,6 @@ const grade = Fn(() => {
 - Expose a pick helper (for example `window.__pick(ndcX, ndcY)` listing the surfaces under a point) to debug a
   wrong material without screenshots.
 - Use a free port: another tool may already hold the usual debugging port.
+- `scripts/web/shot.mjs <url> <out.png> [walk seconds]` does all of the above with Node only: it prints console errors,
+  optionally holds W and prints the position before and after (a walking and collision check without pictures), and
+  saves a screenshot.

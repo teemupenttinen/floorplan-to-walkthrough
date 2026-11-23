@@ -1,0 +1,186 @@
+{
+ "OakPlank": {
+  "src": "Wood058",
+  "ops": [
+   "planks",
+   [
+    "sat",
+    0.85
+   ]
+  ],
+  "target": [
+   208,
+   181,
+   150
+  ],
+  "size": 2048
+ },
+ "OakVeneer": {
+  "src": "Wood058",
+  "ops": [
+   [
+    "sat",
+    0.8
+   ]
+  ],
+  "target": [
+   198,
+   162,
+   120
+  ],
+  "size": 1024
+ },
+ "Quartz": {
+  "src": "Marble021",
+  "ops": [
+   [
+    "sat",
+    0.3
+   ]
+  ],
+  "target": [
+   216,
+   213,
+   207
+  ],
+  "size": 1024
+ },
+ "HallTile": {
+  "src": "Concrete034",
+  "ops": [
+   [
+    "grid",
+    2,
+    3,
+    0.72
+   ]
+  ],
+  "target": [
+   184,
+   182,
+   176
+  ],
+  "size": 1024
+ },
+ "Terrazzo": {
+  "src": "Terrazzo018",
+  "ops": [
+   [
+    "sat",
+    0.12
+   ],
+   [
+    "contrast",
+    0.55
+   ]
+  ],
+  "target": [
+   152,
+   150,
+   146
+  ],
+  "size": 1024
+ },
+ "FineTerrazzo": {
+  "src": "Terrazzo005",
+  "ops": [],
+  "target": [
+   140,
+   136,
+   130
+  ],
+  "size": 1024
+ },
+ "SaunaBoards": {
+  "src": "WoodSiding008",
+  "ops": [
+   "T",
+   [
+    "sat",
+    0.8
+   ]
+  ],
+  "target": [
+   190,
+   138,
+   86
+  ],
+  "size": 1024
+ },
+ "FacadeBoards": {
+  "src": "WoodSiding008",
+  "ops": [
+   "T",
+   [
+    "sat",
+    0.4
+   ]
+  ],
+  "target": [
+   184,
+   170,
+   147
+  ],
+  "size": 1024
+ },
+ "BeigeBrick": {
+  "src": "Bricks093",
+  "ops": [
+   [
+    "sat",
+    0.7
+   ]
+  ],
+  "target": [
+   188,
+   172,
+   146
+  ],
+  "size": 1024
+ },
+ "Deck": {
+  "src": "Planks023A",
+  "ops": [
+   [
+    "sat",
+    0.6
+   ]
+  ],
+  "target": [
+   142,
+   124,
+   100
+  ],
+  "size": 1024
+ },
+ "Grass": {
+  "src": "Grass004",
+  "ops": [
+   [
+    "sat",
+    0.8
+   ]
+  ],
+  "target": [
+   84,
+   100,
+   60
+  ],
+  "size": 1024
+ },
+ "Gravel": {
+  "src": "Gravel041",
+  "ops": [
+   [
+    "sat",
+    0.5
+   ]
+  ],
+  "target": [
+   128,
+   121,
+   110
+  ],
+  "size": 1024
+ }
+}

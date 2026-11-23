@@ -115,7 +115,7 @@ const AMBIENT = 0.5;     // light level of surfaces without a light map (glass-f
 const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.toneMapping = THREE.AgXToneMapping;            // as the Cycles bake's AgX view transform
+renderer.toneMapping = THREE.AgXToneMapping;            // as the Cycles bake's AgX view transform; scene.json look.tone can change it
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa9bccd);
@@ -151,9 +151,9 @@ addEventListener('resize', resize);
 // Look: exposure (eye adaptation like a game engine), bloom, reflections
 
 const LOOK = { key: 0.18, minGain: 0.25, maxGain: 16, speedUp: 2.0, speedDown: 1.5, EV_REF: -1 };
-const LOOK_DEFAULTS = { ev: -1, auto: true, bloom: 0.2, env: 0.1 };
-let look = { ...LOOK_DEFAULTS };
-try { look = { ...LOOK_DEFAULTS, ...JSON.parse(store('wt-look') || '{}') }; } catch { /* defaults */ }
+const LOOK_DEFAULTS = { ev: -1, auto: true, bloom: 0.2, env: 0.1 };   // scene.json "look" overrides (per project)
+let look = { ...LOOK_DEFAULTS }, savedLook = {};
+try { savedLook = JSON.parse(store('wt-look') || '{}'); look = { ...LOOK_DEFAULTS, ...savedLook }; } catch { /* defaults */ }
 for (const k of ['ev', 'bloom', 'env']) if (P.has(k)) look[k] = Number(P.get(k));
 if (P.has('auto')) look.auto = P.get('auto') !== '0';
 
@@ -197,6 +197,15 @@ $('s-auto').addEventListener('change', (e) => { look.auto = e.target.checked; ap
 
 const status = (t) => { $('status').textContent = t; };
 const info = await (await fetch(BASE + 'scene.json', { cache: 'no-cache' })).json();
+if (info.look) {
+  // Project look from the bake config: tone mapping, and defaults the viewer's own slider settings and URL win over.
+  const tones = { agx: THREE.AgXToneMapping, neutral: THREE.NeutralToneMapping, aces: THREE.ACESFilmicToneMapping };
+  if (tones[info.look.tone]) renderer.toneMapping = tones[info.look.tone];
+  for (const k of ['ev', 'bloom', 'env']) {
+    if (typeof info.look[k] === 'number' && !(k in savedLook) && !P.has(k)) look[k] = info.look[k];
+  }
+  applyLook(false);
+}
 const ktx2 = new KTX2Loader().setTranscoderPath(BASIS).detectSupport(renderer);
 const gltfLoader = new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
 const texLoader = new THREE.TextureLoader();

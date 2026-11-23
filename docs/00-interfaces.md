@@ -43,7 +43,8 @@ Written by `scripts/blender/export_manifest.py`. Read by `scripts/unreal/Python/
   "meshes": [ { "file": "SM_name", "name": "source object", "group": "f1", "materials": ["..."], "tris": 1234,
                 "tags": ["optional actor tags"] } ],
   "doors":  [ { "file": "SM_door_name", "name": "...", "materials": ["..."], "hinge": [x, y, z],
-                "open_yaw": 0.0, "closed_yaw": 90.0 } ],      // Unreal yaw degrees; the mesh origin is the hinge
+                "open_yaw": 0.0, "closed_yaw": 90.0,          // Unreal yaw degrees; the mesh origin is the hinge
+                "open": false } ],                            // state at the start (from "start_open")
   "protos": { "<proto name>": { "file": "SM_proto", "materials": ["..."] } },
   "instances": [ { "proto": "<proto name>", "loc": [x, y, z], "yaw": 0.0, "scale": [1, 1, 1] } ],   // yaw in model degrees (CCW)
   "lights": [ { "kind": "rect | spot | point", "name": "Living room", "loc": [x, y, z],
@@ -56,6 +57,53 @@ Written by `scripts/blender/export_manifest.py`. Read by `scripts/unreal/Python/
 
 Mesh files are `export/meshes/<file>.fbx`, textures `export/tex/<name>`. FBX files carry the `SM_` prefix, because the
 FBX import names materials after their slots.
+
+Glass: materials with the Glossy + Transparent pair (`mat_glass`), a Principled BSDF with a constant alpha below 0.5
+(glass that must also reach the browser: glTF carries alpha, not the pair), or a name in `GLASS_NAMES`.
+
+## Door leaves (`door` property)
+
+One object per leaf, with a custom property `door` (a JSON string). Both exporters read it, so the build writes it
+once (`build_template.py` does):
+
+```jsonc
+{ "hinge": [x, y, z],      // model metres, on the hinge axis at floor level
+  "open": 1.5708,          // radians about +z (counter-clockwise seen from above), the open angle
+  "closed": 0.0,           // radians, the closed angle
+  "baked": 1.5708,         // optional: the angle the leaf is modelled at (default "closed"). Model interior doors
+                           // open when the browser's light maps should see daylight through them.
+  "start_open": true }     // optional: Unreal starts with the door open
+```
+
+- Unreal (`export_manifest.py`): turns the leaf back to closed about the hinge, puts the mesh origin on the hinge and
+  writes `open_yaw` / `closed_yaw` as Unreal yaws (negated degrees).
+- Browser (`bake_lightmaps.py`): writes node extras `door: {hinge, open, closed, baked}` in **degrees**; the viewer
+  turns the leaf relative to the baked pose.
+
+## Project config files (`--config`)
+
+`export_manifest.py` and `bake_lightmaps.py` take `--config <file.py>`: a Python file run after their settings, so a
+project sets its own values without editing the kit.
+
+```python
+# export_config.py (Unreal export)
+GROUPS = {"Shell": ("shell", True), "Window frames": ("windows", True), "Glass": ("windows", False),
+          "Doors": ("doors", True), "Furniture": ("furniture", True), "Decor": ("decor", False), "Site": ("site", False)}
+NO_BEVEL = ("Plant", "Lamp", "Tree")
+
+# bake_config.py (browser bake)
+GROUPS = {"house": {"collections": ["Shell", "Doors", "Furniture", "Decor"], "density": 40, "samples": 768},
+          "site": {"collections": ["Site"], "density": 5, "samples": 128}}
+INTERIOR_BOXES = [[0, 0, -0.1, 12, 10, 3.05]]
+LOOK = {"tone": "neutral", "ev": 0.0}
+```
+
+## `scene.json` (browser)
+
+Written by `bake_lightmaps.py`, read by the viewer: `groups` (mesh and light-map files, `scale`), `start`, `spots`
+(from the "Start" and "Spot <name>" empties unless the config lists them), `floors`, `labels`, and `look`:
+`{"tone": "agx" | "neutral" | "aces", "ev": -1, "bloom": 0.2, "env": 0.1}`, the project's default look. A viewer's own
+slider settings and URL parameters (`?ev=`) win over it.
 
 ## `route.txt` (camera paths → Unreal recorder)
 

@@ -3,8 +3,9 @@ Export a Blender model for Unreal: one FBX per object plus manifest.json (format
 read by scripts/unreal/Python/import_manifest.py.
 
 Run headless on a saved .blend (it changes the scene and does not save it):
-  blender -b model.blend --python-exit-code 1 --python export_manifest.py -- [--out] <out dir>
-Default out dir: <blend dir>/export.
+  blender -b model.blend --python-exit-code 1 --python export_manifest.py -- [--out] <out dir> [--config project.py]
+Default out dir: <blend dir>/export. --config: a Python file run after the settings below, so a project can set
+GROUPS, NO_BEVEL, GLASS_NAMES, SMOOTH_MATERIALS, BEVEL_WIDTH without editing this file.
 
 Nothing is baked: Unreal lights the scene itself (Lumen). Instead each material is described in the manifest
 (describe()), and the faces get UVs that reproduce Cycles' world box mapping (box_uvs()), so tiling scans look
@@ -12,8 +13,10 @@ the same in Cycles, Unreal and the browser.
 
 Conventions it relies on (set by build_template.py, easy to follow in your own build):
 - GROUPS below: which collections are exported, and whether their boxes get a small bevel.
-- Door leaves: objects with a custom property "door" = JSON {"hinge": [x, y, z], "open": rad, "closed": rad},
-  modelled closed in world space. The mesh origin moves to the hinge.
+- Door leaves: objects with a custom property "door" = JSON {"hinge": [x, y, z], "open": rad, "closed": rad,
+  "baked": rad (optional), "start_open": bool (optional)}. The leaf is modelled at angle "baked" (default: closed;
+  a leaf modelled open lets daylight into the room in the browser's light-map bake). The export turns it back to
+  closed about the hinge and moves the mesh origin to the hinge. docs/00-interfaces.md has the full convention.
 - Area lights: room lights (kind rect). Point/spot lights: kept as they are.
 - Collection instances (trees, chairs, grass clumps): one prototype mesh each, plus instance transforms.
 - Empties "Start" and "Spot <name>": player start and teleport points.
@@ -33,6 +36,7 @@ from mathutils import Matrix, Vector
 
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 BLEND_DIR = os.path.dirname(bpy.data.filepath) or os.getcwd()
+CONFIG_FILE = os.path.abspath(ARGS[ARGS.index("--config") + 1]) if "--config" in ARGS else None
 if "--out" in ARGS:
     OUT_DIR = os.path.abspath(ARGS[ARGS.index("--out") + 1])
 elif ARGS and not ARGS[0].startswith("--"):
@@ -43,17 +47,21 @@ MESH_DIR = os.path.join(OUT_DIR, "meshes")
 TEX_OUT = os.path.join(OUT_DIR, "tex")
 
 # Collection name -> (export group, bevel). Objects in no listed collection are skipped.
+# "Decor": soft and round things (sofas, cushions, lamps, plants). No bevel: add_bevel() marks every crease over 1
+# degree sharp, which turns smooth-shaded shapes faceted.
 GROUPS = {
     "Shell": ("shell", True),
     "Windows": ("windows", False),
     "Doors": ("doors", True),
     "Furniture": ("furniture", True),
+    "Decor": ("decor", False),
     "Site": ("site", False),
 }
 BEVEL_WIDTH = 0.003        # 3 mm rounded edges catch the light like real joinery; 0 turns the bevel off
 THIN_BEVEL = 0.001
 NO_BEVEL = ("Plant", "Lamp", "Tap")        # name prefixes that must not be bevelled (organic or tiny parts)
 SMOOTH_MATERIALS = set()                    # material names that should shade smooth (round lamps, ceramics)
+GLASS_NAMES = ("Glass",)                    # material name prefixes exported as kind "glass" (any node setup)
 
 
 def log(*a):
@@ -113,6 +121,12 @@ def describe(mat):
     if "BSDF_GLOSSY" in types and "BSDF_TRANSPARENT" in types:
         tint = next(n for n in nodes if n.type == "BSDF_TRANSPARENT").inputs["Color"].default_value[:3]
         return {"kind": "glass", "tint": list(tint)}
+    # Glass that must also reach the browser (glTF has no Glossy + Transparent): a Principled BSDF with a low
+    # constant alpha, or any material named in GLASS_NAMES.
+    alpha_glass = (bsdf is not None and not bsdf.inputs["Alpha"].is_linked and bsdf.inputs["Alpha"].default_value < 0.5
+                   and not bsdf.inputs["Base Color"].is_linked)
+    if alpha_glass or mat.name.startswith(tuple(GLASS_NAMES)):
+        return {"kind": "glass", "tint": [0.95, 0.98, 0.97]}
     if bsdf is None:
         return {"kind": "flat", "color": list(mat.diffuse_color[:3]), "rough": 0.5, "metal": 0.0}
 
@@ -422,9 +436,14 @@ def main():
             if ob.get("door"):
                 info = json.loads(ob["door"])
                 hx, hy, hz = info["hinge"]
+                # leaf modelled at "baked" (e.g. open for the light-map bake): turn it back to closed
+                turn = info.get("closed", 0.0) - info.get("baked", info.get("closed", 0.0))
                 ob.data.transform(Matrix.Translation((-hx, -hy, -hz)))        # origin on the hinge
+                if abs(turn) > 1e-6:
+                    ob.data.transform(Matrix.Rotation(turn, 4, "Z"))
                 e = mesh_entry(ob, materials, "SM_door_" + safe(src))
-                e.update(name=src, hinge=[hx, hy, hz], open_yaw=ue_yaw(info["open"]), closed_yaw=ue_yaw(info["closed"]))
+                e.update(name=src, hinge=[hx, hy, hz], open_yaw=ue_yaw(info["open"]), closed_yaw=ue_yaw(info["closed"]),
+                         open=bool(info.get("start_open", False)))
                 doors.append(e)
             else:
                 e = mesh_entry(ob, materials, "SM_" + safe(src))
@@ -450,6 +469,10 @@ def main():
     log("done: %d meshes, %d doors, %d materials, %d prototypes, %d instances -> %s"
         % (len(meshes), len(doors), len(materials), len(protos), len(inst), OUT_DIR))
 
+
+if CONFIG_FILE and not globals().get("NO_MAIN"):      # not when loaded as a library (the web bake)
+    exec(compile(open(CONFIG_FILE).read(), CONFIG_FILE, "exec"), globals())
+    log("config", CONFIG_FILE)
 
 if __name__ == "__main__" and not globals().get("NO_MAIN"):
     main()

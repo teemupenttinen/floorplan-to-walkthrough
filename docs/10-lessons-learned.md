@@ -15,6 +15,9 @@ Each entry is a symptom, its cause and the fix. Most of them cost hours the firs
 | The rebuild moved something nobody touched | Another session's edits to a shared helper | Snapshot and diff every rebuild |
 | A scratch script broke Pillow | A scratch file named like a standard module (`inspect.py`) | Never name scripts after standard modules. Run scripts that read downloads with `python -I`. |
 | zsh `rm -f a* b*` deleted nothing | An unmatched glob aborts the whole command | Use `setopt null_glob`, or delete per pattern |
+| A zsh script stops at a cleanup line (`no matches found`) | The same glob trap under `set -e`, e.g. `rm -f "$OUT"/frame_*.png` before the first run | `find "$OUT" -name 'frame_*.png' -delete` |
+| Smooth furniture exported faceted | The export bevel marks every crease over 1° sharp | A "Decor" collection that is not bevelled |
+| Template room lights in the daytime light map | Light objects render in the Cycles bake | The bake hides them with `LAMPS_OFF` |
 
 ## Unreal
 
@@ -38,6 +41,10 @@ Each entry is a symptom, its cause and the fix. Most of them cost hours the firs
 | The C++ build fails after an Xcode update | The Metal toolchain is a separate download per Xcode version | `xcodebuild -downloadComponent MetalToolchain` |
 | Textures without mips | The size is not a power of two | Use 512, 1024, 2048 |
 | HISM instances grey | The material lacks the instanced-meshes usage flag | Set `used_with_instanced_static_meshes` |
+| Every textured surface is a grey checker | The master material failed to compile (a Masks sampler holding a colour texture) | Fixed in `import_manifest.py`; read the game log for `Failed to compile Material` |
+| No key works in the game | Input settings in `DefaultEngine.ini` | Move them to `DefaultInput.ini` |
+| Facades blow out, interiors are right | Interior-tuned auto exposure outdoors | `AWalkSun::OutdoorExposure` (−1 EV when nothing is overhead) |
+| Textures graded for the browser look yellow in Unreal | Different tone maps | Check the grade in Unreal stills (photo-matching loop) |
 
 ## Recording and video
 
@@ -63,6 +70,11 @@ Each entry is a symptom, its cause and the fix. Most of them cost hours the firs
 | Halos at window edges | Local exposure on a wide blur | Mostly per-pixel luminance, with only a third of the blurred value |
 | A headless screenshot is black or stuck on "Loading" | Chrome `--screenshot` with WebGPU or WebGL | Drive Chrome over CDP (puppeteer-core) and wait for `window.__ready` |
 | A hosted page cannot load models | The host's CSP blocks `fetch()` of `data:` and `blob:` | Embed the glTF buffers, decode base64 yourself, and use `<img>` for textures |
+| Tiling textures 2-3× too large | Box UVs in tiles plus the Mapping scale exported as `KHR_texture_transform` | The bake resets the Mapping scale before the export |
+| Normal maps never show | The bake set their strength to 0 and the GLB went out in the same session | The bake restores it before the export |
+| Wood, sauna and white walls look pastel and grey | AgX tone mapping | `LOOK = {"tone": "neutral", "ev": 0}` in the bake config |
+| Images "are JPEGs" but tools fail on them | Listing sites (e.g. a common Finnish one) serve WebP under `.jpg` | Convert with ffmpeg first |
+| Every wall is white, the photos are not | One paint assumed for the whole home | Measure each wall against the ceiling in the same photo (chapter 2) |
 
 ## AI stills and videos
 

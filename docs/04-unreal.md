@@ -5,8 +5,8 @@ doors, a real sun for any day and hour, lamps, path-traced stills and a camera r
 Everything is built by script. You never place an actor by hand, so a model change is one command away.
 
 > The C++ and Python here are cleaned-up, generic versions of code that ran in a real project on UE 5.x.
-> The generic versions have not been compiled or run as they are. Expect to fix small API differences for
-> your engine version.
+> They were compiled and run as they are on UE 5.8 with Xcode 27 (macOS, Apple silicon) in one test project.
+> Expect small API differences on other engine versions.
 
 ## Why C++ plus Python
 
@@ -24,7 +24,8 @@ the editor can author.
 | Path | What it does |
 |---|---|
 | `scripts/unreal/Walkthrough.uproject.template` | Project file with the needed plugins. Rename it to `Walkthrough.uproject`. |
-| `scripts/unreal/Config/DefaultEngine.snippet.ini` | Renderer settings (Lumen HW ray tracing, VSM, TSR, path tracing), remote execution, game mode, Enhanced Input. |
+| `scripts/unreal/Config/DefaultEngine.snippet.ini` | Renderer settings (Lumen HW ray tracing, VSM, TSR, path tracing), remote execution, game mode. |
+| `scripts/unreal/Config/DefaultInput.snippet.ini` | Enhanced Input classes. They must be in `DefaultInput.ini`: in `DefaultEngine.ini` they are ignored and no key works. |
 | `scripts/unreal/Source/` | The C++ module `Walkthrough` and its two target files. |
 | `scripts/unreal/Python/import_manifest.py` | Builds everything from `export/manifest.json`. Copy it to `Content/Python/`. |
 | `scripts/unreal/Python/update_running_editor.py` | Re-imports textures, materials and meshes into an open editor. |
@@ -39,6 +40,7 @@ the editor can author.
    Walkthrough/
      Walkthrough.uproject          <- Walkthrough.uproject.template
      Config/DefaultEngine.ini      <- merge DefaultEngine.snippet.ini
+     Config/DefaultInput.ini       <- merge DefaultInput.snippet.ini
      Source/Walkthrough.Target.cs, WalkthroughEditor.Target.cs, Walkthrough/*   <- scripts/unreal/Source
      Content/Python/import_manifest.py, update_running_editor.py
    ```
@@ -62,7 +64,7 @@ BLEND=model.blend PROJECT=/abs/Walkthrough/Walkthrough.uproject scripts/unreal/b
 
 | Step | Command | Time (a 3-storey home with its block) |
 |---|---|---|
-| 1. Export | `Blender -b model.blend --python-exit-code 1 --python scripts/blender/export_manifest.py` | seconds to 2 min |
+| 1. Export | `blender -b model.blend --python-exit-code 1 --python scripts/blender/export_manifest.py` | seconds to 2 min |
 | 2. Import | `UnrealEditor-Cmd Walkthrough.uproject -run=pythonscript -script=<abs>/Content/Python/import_manifest.py` | 15-90 s |
 | 3. C++ (only after C++ changes) | `Build.sh WalkthroughEditor Mac Development -project=<abs>` | about 30 s |
 
@@ -73,6 +75,9 @@ BLEND=model.blend PROJECT=/abs/Walkthrough/Walkthrough.uproject scripts/unreal/b
 - `LEVEL_ONLY=1` rebuilds only the level from assets an earlier import made (fast, for level tweaks).
 - Always pass `--python-exit-code 1` to Blender. Without it, a script error still "succeeds" and you import
   half an export.
+- Project settings for the export (collection names, glass names, which groups are not bevelled) go into a config
+  file: `export_manifest.py -- --out export --config export_config.py` (docs/00-interfaces.md). Put sofas, cushions,
+  lamps and plants in a "Decor" collection: the bevel step marks every crease sharp and would make them faceted.
 
 Run the game:
 
@@ -129,6 +134,7 @@ rebuilds it from a few master materials. One material instance per Blender mater
 | Auto exposure | Histogram, low 10 %, **high 65 %**, bias +1.3, min brightness 4 | Meters the room and ignores the bright window third of the picture. The minimum keeps night rooms dark. |
 | Local exposure | Highlight contrast 0.18, shadow 0.85, blurred luminance blend 0.6 | Compresses the bright window view and lifts dark corners, so room and view both read. |
 | Default exposure | -1 EV (`AWalkSun::DefaultExposure`) | Closer to real-estate photographs of bright rooms. |
+| Outdoor exposure | −1 EV more outdoors (`AWalkSun::OutdoorExposure`) | The interior metering ignores the brightest 35 % (windows); outside that is the sky, so facades metered alone blow out. Outdoors = a ray straight up from the camera hits nothing within 30 m; eased over 1 s. |
 | Lumen quality | final gather, scene detail, lighting, reflections all 2 | Cleaner indirect light in small rooms. |
 | Look | vignette 0.25, bloom 0.4, motion blur 0.2, saturation 1.1, Lumen diffuse colour boost 1.2 | Leave out saturation and colour boost if a green lawn tints white walls olive. |
 
@@ -158,6 +164,17 @@ DAY=250 HOUR=18.5 EV=-0.6 WHITE=7300 FOV=90 scripts/unreal/record.sh fly route_f
 ```
 
 `WHITE` above 6500 reads warmer. Test grades as stills first (route `still` lines with `hour ev white`).
+
+**Overcast recipe** (most Nordic listing photos are overcast: soft light, white sky, neutral whites). Set it on the
+spawned actors in a project import wrapper (exec `import_manifest.py` with `NO_MAIN = True`, adjust, call `main()`):
+
+| Setting | Value |
+|---|---|
+| Sun (`AWalkSun::SunLux` and the light) | 4000 lux, source angle 30°, `atmosphere_sun_disk_color_scale` black (no disc) |
+| SkyAtmosphere | Mie scattering scale 0.02 (5× default), Mie absorption 0.0005, Rayleigh scattering scale 0.012, multi-scattering 2 |
+| Clouds | hidden |
+| Sky light | intensity 3 |
+| Post | white balance 6000 K (`WHITE=6000` when recording), saturation 0.9, no Lumen diffuse colour boost |
 
 ## Recording frames
 
@@ -225,6 +242,11 @@ never saves them. Judge reflections and shadows with `-WalkQuality=2` or `3`.
 | Remote execution finds no editor (Mac) | Bind the multicast to 0.0.0.0, not 127.0.0.1. |
 | White walls turn olive | Green bounce light from a lawn plus a saturation boost. Remove `color_saturation` and `lumen_diffuse_color_boost` from the post settings. |
 | Sky shows a blue band at the horizon | The ground ends and the atmosphere draws the bare planet. Add a dark ring of distant "hills" just inside the far clip, or extend the ground. |
+| Every textured surface is a grey checker | The master material failed to compile; the game log says why (`Sampler type is Masks, should be Color` was a roughness sampler holding a colour texture; fixed in `import_manifest.py`). Search the game log for `Failed to compile Material`. |
+| No key works; the log says "Set the Enhanced Input component class" | The input settings are in `DefaultEngine.ini`. Move them to `DefaultInput.ini`. |
+| C++ fails with `-Wunreachable-code-loop-increment` | Newer clang (Xcode 27) rejects `for (TActorIterator<T> It(...); It; ++It) { ...; break; }`. Use `if (TActorIterator<T> It(GetWorld()); It)`. |
+| Where is the game log? | On a Mac `~/Library/Logs/<Project>/<Project>.log`, not `Saved/Logs` (record.sh appends it to its own log). |
+| Interior and exterior grade differently | Textures graded against the photos for the browser read too yellow under Unreal's tone map. Check textures in Unreal stills, not only in the browser. |
 
 ## Checking without looking
 
@@ -235,3 +257,17 @@ Screenshot runs open windows and use the GPU. Prefer checks by script:
 - a ray-cast of every route in Blender before recording (`docs/05-routes-and-recording.md`).
 
 Render a still only when a script cannot find a suspected fault, and say what was not checked by eye.
+
+## The photo-matching loop
+
+The one check by eye that pays for itself: one still per reference photo, the photo and the still side by side.
+
+```sh
+python3 scripts/routes/make_photo_stills.py views.json route_photos.txt      # views: photo, eye, look-at, lamps
+PROJECT=<abs>/Walkthrough.uproject QUALITY=2 FOV=90 WARM=15 scripts/unreal/record.sh stills route_photos.txt stills
+python3 scripts/video/compare_sheet.py views.json <photos dir> stills compare/round1
+```
+
+With the export and import in the same script, a round takes about 60 s (8 views, UE 5.8, M4 Pro). Fix one thing per
+round, in this order: missing materials (checker), exposure, colour cast, texture scale, missing parts. Turn the room
+light on (`"lamps": true`) for photos taken with the lights on.

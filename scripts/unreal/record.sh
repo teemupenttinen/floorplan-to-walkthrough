@@ -19,7 +19,7 @@ MODE=${1:?mode: walk, fly or stills}
 ROUTE=${2:?route.txt}
 OUT=${3:?output folder}
 : ${PROJECT:?set PROJECT to the absolute path of your .uproject}
-UE_ROOT=${UE_ROOT:-"/Users/Shared/Epic Games/UE_5.5"}
+UE_ROOT=${UE_ROOT:-"/Users/Shared/Epic Games/UE_5.8"}
 UE="$UE_ROOT/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"
 [ -x "$UE" ] || UE="$UE_ROOT/Engine/Binaries/Linux/UnrealEditor"
 MAP=${MAP:-/Game/Maps/Walkthrough}
@@ -37,7 +37,8 @@ FLAGS=(-WalkOut="$OUT" -WalkRoute="$ROUTE" -WalkFps=${FPS:-24} -WalkFov=${FOV:-8
 [ -n "$HOUR" ] && FLAGS+=(-WalkHour=$HOUR)
 [ -n "$DAY" ] && FLAGS+=(-WalkDay=$DAY)
 
-rm -f "$OUT"/frame_*.png
+# find, not a glob: zsh aborts a script (set -e) on a glob with no match ("no matches found")
+find "$OUT" -maxdepth 1 \( -name "frame_*.png" -o -name "still_*.png" \) -delete
 LOG="$OUT/record.log"
 # 1600 x 900: a 1920 x 1080 window does not fit a laptop screen and the frames come out at another size.
 # -RenderOffscreen: no window on the screen, the GPU renders anyway.
@@ -48,6 +49,11 @@ sleep 5
 while pgrep -f "WalkRoute=$ROUTE" > /dev/null; do sleep 5; done
 N=$(ls "$OUT" | grep -c -E '^(frame|still)_' || true)
 echo "$MODE: $N pictures in $OUT"
-grep -E "Walk: (done|stills done)" "$LOG" > /dev/null || echo "WARNING: the run did not finish; see the game log (Saved/Logs or ~/Library/Logs/<Project>)"
+# The game log: on a Mac the game writes ~/Library/Logs/<Project>/<Project>.log, not stdout or Saved/Logs.
+GAME_LOG="$HOME/Library/Logs/$(basename "$PROJECT" .uproject)/$(basename "$PROJECT" .uproject).log"
+[ -f "$GAME_LOG" ] || GAME_LOG="$(dirname "$PROJECT")/Saved/Logs/$(basename "$PROJECT" .uproject).log"
+cat "$GAME_LOG" >> "$LOG" 2>/dev/null || true
+grep -E "Walk: (done|stills done)" "$LOG" > /dev/null || echo "WARNING: the run did not finish; see $LOG"
 grep -q "SpawnActor failed because of collision" "$LOG" && echo "WARNING: the player did not spawn: move the player start out of geometry"
+grep -E "LogWalk: Error|Sampler type .* should be|Failed to compile Material" "$LOG" | sort -u | head -5
 exit 0

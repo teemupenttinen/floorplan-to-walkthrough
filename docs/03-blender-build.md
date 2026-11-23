@@ -25,7 +25,8 @@ To look at or change something in the open session, use the Blender MCP add-on s
 | `mesh_builder.py` | `MB` collects boxes and prisms and builds one object with a slot per material key. `wall()` cuts openings by building pieces around them, with no booleans. `slab()`, `stair()` and `polygon_area()`. |
 | `materials.py` | `mat_flat`, `mat_tex` (world box-projected scans), `mat_uv`, `mat_glass` and `mat_emit`, plus `srgb()` to convert colours. These are the node layouts the exporters can read back. |
 | `build_template.py` | A home from data tables: ROOMS, WALLS, WINDOWS and DOORS. It builds floors, ceilings, walls, windows, door leaves with hinge data, room lights, the sun, the spots and `labels.json`. |
-| `export_manifest.py` | Exports to Unreal: FBX files plus `manifest.json` (see chapter 4). |
+| `export_manifest.py` | Exports to Unreal: FBX files plus `manifest.json` (see chapter 4). `--config` for a project's collections and glass names. |
+| `plan_overlay.py` | Plan section at 1 m blended over the plan image: the first geometry check (chapter 2). |
 | `snapshot_check.py` | Compares the object names, the polygon counts and the world bounds before and after a rebuild. |
 | `blender_socket.py` | Runs Python in the open Blender session. |
 

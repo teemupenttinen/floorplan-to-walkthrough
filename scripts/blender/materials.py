@@ -101,7 +101,8 @@ def _image(path, non_color=False):
 def mat_tex(name, set_name, tile=(1.0, 1.0, 1.0), rough=None, normal=1.0, saturation=1.0, value=1.0,
             tint=None, tint_mix=0.0, tex_dir=None):
     """Tiling image maps on world box projection. set_name is an ambientCG folder in TEX_DIR:
-    <set>/<set>_Color.jpg, _NormalGL.jpg, _Roughness.jpg. tile: tile size in metres (x, y, z).
+    <set>/<set>_Color.jpg, _NormalGL.jpg, _Roughness.jpg (or ambientCG's <set>_1K-JPG_Color.jpg ...).
+    tile: tile size in metres (x, y, z). Delete the .blend/.usdc/.mtlx files that come in the zips unread.
     saturation / value / tint adjust a scan to a product colour without editing the image."""
     tex_dir = tex_dir or globals().get("TEX_DIR") or os.environ.get("TEX_DIR", "textures")
     base = os.path.join(tex_dir, set_name, set_name + "_")
@@ -113,17 +114,29 @@ def mat_tex(name, set_name, tile=(1.0, 1.0, 1.0), rough=None, normal=1.0, satura
     mp.inputs["Scale"].default_value = (1.0 / tile[0], 1.0 / tile[1], 1.0 / tile[2])
     nt.links.new(geo.outputs["Position"], mp.inputs["Vector"])
 
-    def img_node(suffix, non_color):
+    def find(suffix):
+        """<set>_Color.jpg, or the names ambientCG downloads use now: <set>_1K-JPG_Color.jpg, _2K-PNG_ ..."""
+        folder = os.path.dirname(base)
         for ext in (".jpg", ".png"):
-            p = base + suffix + ext
-            if os.path.exists(p):
-                n = nt.nodes.new("ShaderNodeTexImage")
-                n.image = _image(p, non_color)
-                n.projection = "BOX"
-                n.projection_blend = 0.15
-                nt.links.new(mp.outputs[0], n.inputs["Vector"])
-                return n
+            if os.path.exists(base + suffix + ext):
+                return base + suffix + ext
+        if os.path.isdir(folder):
+            hits = sorted(f for f in os.listdir(folder) if f.startswith(set_name + "_") and
+                          os.path.splitext(f)[0].endswith("_" + suffix) and f.lower().endswith((".jpg", ".png")))
+            if hits:
+                return os.path.join(folder, hits[0])
         return None
+
+    def img_node(suffix, non_color):
+        p = find(suffix)
+        if p is None:
+            return None
+        n = nt.nodes.new("ShaderNodeTexImage")
+        n.image = _image(p, non_color)
+        n.projection = "BOX"
+        n.projection_blend = 0.15
+        nt.links.new(mp.outputs[0], n.inputs["Vector"])
+        return n
 
     col = img_node("Color", False)
     if col is None:

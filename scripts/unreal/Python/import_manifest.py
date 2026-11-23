@@ -214,11 +214,18 @@ def master_textured(tex, mpc):
         base = weathering(m, base, leak)
     mel.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
 
-    rough_t = expr(m, unreal.MaterialExpressionTextureSampleParameter2D, -1400, 200, parameter_name="RoughnessMap",
-                   texture=placeholder(tex, suffix="roughness.jpg"),
-                   sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
-    rough = lerp(m, scalar(m, "Roughness", 0.5, -1100, 150), "", rough_t, "R",
-                 scalar(m, "UseRoughnessMap", 0.0, -1100, 300), "", -800, 200)
+    # The RoughnessMap sampler (Masks) needs a linear roughness texture as its default. Without one in the export,
+    # any other texture there (an sRGB colour map) fails the sampler check, the whole master material fails to
+    # compile, and every textured surface draws the grey default checker (the error is only in the game log).
+    rough_default = next((t for k, t in tex.items() if "rough" in k.lower()), None)
+    if rough_default is not None:
+        rough_t = expr(m, unreal.MaterialExpressionTextureSampleParameter2D, -1400, 200, parameter_name="RoughnessMap",
+                       texture=rough_default, sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
+        rough = lerp(m, scalar(m, "Roughness", 0.5, -1100, 150), "", rough_t, "R",
+                     scalar(m, "UseRoughnessMap", 0.0, -1100, 300), "", -800, 200)
+    else:
+        log("no roughness maps in the export: M_Textured uses the Roughness value only")
+        rough = scalar(m, "Roughness", 0.5, -1100, 150)
     mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.connect_material_property(scalar(m, "Metallic", 0.0, -800, 400), "", unreal.MaterialProperty.MP_METALLIC)
 
@@ -409,7 +416,7 @@ def make_instances(materials, masters, tex):
                 set_s(mi, "TintMix", d.get("tint_mix", 0.0))
             set_s(mi, "Roughness", d.get("rough", 0.5))
             set_s(mi, "Metallic", d.get("metal", 0.0))
-            if d.get("rough_tex") in tex:
+            if d.get("rough_tex") in tex:          # (the parameter exists only when the export has roughness maps)
                 set_t(mi, "RoughnessMap", tex[d["rough_tex"]])
                 set_s(mi, "UseRoughnessMap", 1.0)
             if d.get("normal_tex") in tex:

@@ -203,10 +203,9 @@ void UWalkRecorderComponent::Begin()
 {
 	AActor* Owner = GetOwner();
 	Camera = Owner->FindComponentByClass<UCameraComponent>();
-	for (TActorIterator<AWalkSun> It(GetWorld()); It; ++It)
+	if (TActorIterator<AWalkSun> It(GetWorld()); It)
 	{
 		Sun = *It;
-		break;
 	}
 	if (ACharacter* Ch = Cast<ACharacter>(Owner))
 	{

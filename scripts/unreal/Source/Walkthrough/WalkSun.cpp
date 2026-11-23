@@ -6,27 +6,28 @@
 #include "Engine/DirectionalLight.h"
 #include "Engine/PostProcessVolume.h"
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/World.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "Materials/MaterialParameterCollection.h"
 
 AWalkSun::AWalkSun()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 }
 
 void AWalkSun::BeginPlay()
 {
 	Super::BeginPlay();
-	for (TActorIterator<ADirectionalLight> It(GetWorld()); It; ++It)
+	if (TActorIterator<ADirectionalLight> It(GetWorld()); It)
 	{
 		Sun = Cast<UDirectionalLightComponent>(It->GetLightComponent());
-		break;
 	}
-	for (TActorIterator<APostProcessVolume> It(GetWorld()); It; ++It)
+	if (TActorIterator<APostProcessVolume> It(GetWorld()); It)
 	{
 		BaseBias = It->Settings.AutoExposureBias;
-		break;
 	}
 	FindLamps();
 	SetExposure(DefaultExposure);
@@ -83,10 +84,47 @@ void AWalkSun::SetDay(int32 NewDay)
 
 void AWalkSun::SetExposure(float Ev)
 {
+	CurrentEv = FMath::Clamp(Ev, -4.f, 4.f);
+	ApplyExposure();
+}
+
+void AWalkSun::ApplyExposure()
+{
 	for (TActorIterator<APostProcessVolume> It(GetWorld()); It; ++It)
 	{
 		It->Settings.bOverride_AutoExposureBias = true;
-		It->Settings.AutoExposureBias = BaseBias + FMath::Clamp(Ev, -4.f, 4.f);
+		It->Settings.AutoExposureBias = BaseBias + CurrentEv + OutdoorBlend * OutdoorExposure;
+	}
+}
+
+void AWalkSun::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	if (!PC || !PC->PlayerCameraManager)
+	{
+		return;
+	}
+	// A ray straight up from the camera: a roof or ceiling above means indoors (or under the eaves).
+	OutdoorCheck -= DeltaSeconds;
+	if (OutdoorCheck <= 0.f)
+	{
+		OutdoorCheck = 0.2f;
+		const FVector P = PC->PlayerCameraManager->GetCameraLocation();
+		FHitResult Hit;
+		FCollisionQueryParams Q(TEXT("WalkOutdoor"), true);
+		if (APawn* Pawn = PC->GetPawn())
+		{
+			Q.AddIgnoredActor(Pawn);
+		}
+		bOutdoor = !GetWorld()->LineTraceSingleByChannel(Hit, P, P + FVector(0, 0, 3000), ECC_Visibility, Q);
+	}
+	const float Target = bOutdoor ? 1.f : 0.f;
+	const float NewBlend = FMath::FInterpConstantTo(OutdoorBlend, Target, DeltaSeconds, 1.f);
+	if (!FMath::IsNearlyEqual(NewBlend, OutdoorBlend))
+	{
+		OutdoorBlend = NewBlend;
+		ApplyExposure();
 	}
 }
 

@@ -63,6 +63,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sun")
 	float DefaultExposure = -1.f;
 
+	/** Exposure offset outdoors (EV), on top of SetExposure: the auto exposure is tuned for rooms with bright
+	 *  windows and over-brightens facades under an open sky. "Outdoors" = nothing above the camera within 30 m. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sun")
+	float OutdoorExposure = -1.f;
+	virtual void Tick(float DeltaSeconds) override;
 	/** Lamp colour temperature (K). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sun")
 	float LampKelvin = 3000.f;
@@ -107,6 +112,11 @@ public:
 	virtual void BeginPlay() override;
 
 private:
+	float CurrentEv = 0.f;
+	float OutdoorBlend = 0.f;
+	float OutdoorCheck = 0.f;
+	bool bOutdoor = false;
+	void ApplyExposure();
 	void ApplySun();
 	void ApplyLampGlow(float Level);
 	void FindLamps();

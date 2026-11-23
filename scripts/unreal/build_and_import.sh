@@ -14,7 +14,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 : ${BLEND:?set BLEND to the .blend file}
 : ${PROJECT:?set PROJECT to the absolute path of the .uproject}
 BLENDER=${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender}
-UE_ROOT=${UE_ROOT:-"/Users/Shared/Epic Games/UE_5.5"}
+UE_ROOT=${UE_ROOT:-"/Users/Shared/Epic Games/UE_5.8"}
 PLATFORM=${PLATFORM:-Mac}
 PROJ_DIR=$(dirname "$PROJECT")
 MODULE=$(basename "$PROJECT" .uproject)

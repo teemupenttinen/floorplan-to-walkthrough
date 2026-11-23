@@ -8,8 +8,8 @@ class UStaticMeshComponent;
 
 /**
  * Hinged door. The actor stands on the hinge and the leaf turns about its vertical axis. The leaf mesh is
- * modelled with the hinge at its origin (export_manifest.py moves it there) and exported fully open, so
- * OpenYaw and ClosedYaw are plain Unreal yaws from the manifest.
+ * exported CLOSED with the hinge at its origin (export_manifest.py moves it there and turns a leaf modelled at
+ * another angle back to closed), so OpenYaw and ClosedYaw are plain Unreal yaws from the manifest.
  * The player's E key and the recorder's "door" route lines set bOpen; Tick turns the leaf toward it.
  */
 UCLASS()

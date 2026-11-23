@@ -4,16 +4,18 @@ Light-map bake for the browser walkthrough (scripts/web/viewer/index.html).
 Run headless on a saved model, never in the Blender session you are working in. The script changes the
 scene and does not save it:
 
-  Blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py
-  Blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py -- --reuse
-  Blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py -- --only floor1 --only floor2
-  Blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py -- --albedo
+  blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py
+  blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py -- --reuse
+  blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py -- --only floor1 --only floor2
+  blender -b model.blend --python-exit-code 1 --python bake_lightmaps.py -- --albedo
 
   --reuse     keep light maps already in <out>/build when the atlas size and object count are the same
               (the unwrap is deterministic, so the same geometry gives the same UVs)
   --only G    bake and write only group G (repeatable); the other groups still cast light and shadow
   --albedo    also bake the surface colour into a second atlas. Use this when the materials are procedural
               (noise, box mapping): the glTF exporter cannot export them, the baked colour can.
+  --config F  a Python file run after the CONFIG block below: a project sets GROUPS, INTERIOR_BOXES, LOOK ...
+              there instead of editing this script.
 
 What it writes (default <folder of the .blend>/web, or $WEB_OUT):
   mesh/<group>.glb       UV 0 = the material UVs, UV 1 = the light map atlas ('Bake' layer).
@@ -33,7 +35,7 @@ Tools (optional, each step is skipped with a warning when the tool is missing):
                                  without textures (else UV 1 is dropped); -noq because box-projected UVs run
                                  to hundreds of tiles and quantization breaks them.
 
-Edit the CONFIG block below for your model.
+Set the CONFIG block for your model with --config project_bake.py (preferred) or edit it here.
 """
 
 import json
@@ -70,19 +72,24 @@ HIDE_DURING_BAKE = ()                   # name prefixes of objects to hide (an a
 # by daylight. Empty = no portals.
 INTERIOR_BOXES = []
 
-# Doors the viewer can open (E key). Source object name -> hinge (model metres), angles in degrees about +z
-# (counter-clockwise seen from above): open, closed, and the angle the leaf has in the model ("baked").
-# The leaf must be its own object. The light map is baked in the modelled pose.
+# Doors the viewer can open (E key). Read from the model: every object with a "door" property (JSON, radians,
+# see docs/00-interfaces.md; build_template.py writes it). Entries here (degrees) add to or override those:
+# source object name -> hinge (model metres), angles in degrees about +z (counter-clockwise seen from above): open,
+# closed, and the angle the leaf has in the model ("baked"). The light map is baked in the modelled pose.
 DOORS = {
     # "Door bedroom leaf": {"hinge": [2.10, 5.80, 0.0], "open": 90.0, "closed": 0.0, "baked": 0.0},
 }
 
-START = {"loc": [1.0, -2.0, 1.6], "yaw": 90.0}      # eye position (model metres) and yaw (degrees, ccw from +x)
-SPOTS = [                                           # keys 1..9 in the viewer
-    {"name": "Entrance", "loc": [1.0, -2.0, 1.6], "yaw": 90.0},
-]
+# Eye position (model metres) and yaw (degrees, ccw from +x). None = from the empties "Start" and "Spot <name>"
+# in the model (spots in name order; list them here for another order).
+START = None
+SPOTS = None
+EYE_HEIGHT = 1.6                                    # added to the empties (on the floor); the viewer's EYE
 FLOORS = [0.0, 3.0, 6.0]                            # floor levels (model z), for the dollhouse cut
 LABELS = "labels.json"                              # copied next to scene.json when it is beside the .blend
+# Viewer look, written to scene.json. tone "agx" (as the bake's view transform) or "neutral" (keeps hue and
+# saturation: warm wood, an orange sauna and white walls stay as in listing photos); ev = default exposure.
+LOOK = {"tone": "agx", "ev": -1.0}
 
 MAX_ATLAS = 4096
 MIN_ATLAS = 1024
@@ -94,6 +101,10 @@ DENSE_AREA = 0.4        # ... and less surface (m2) get no light map (potted pla
 # ---------------------------------------------------------------------------
 
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+if "--config" in ARGS:
+    _cfg = os.path.abspath(ARGS[ARGS.index("--config") + 1])
+    exec(compile(open(_cfg).read(), _cfg, "exec"), globals())
+    print("[bake] config", _cfg, flush=True)
 REUSE = "--reuse" in ARGS
 ALBEDO = "--albedo" in ARGS
 ONLY = [ARGS[i + 1] for i, a in enumerate(ARGS) if a == "--only" and i + 1 < len(ARGS)]
@@ -122,6 +133,8 @@ if os.path.exists(_em_path) and not os.environ.get("NO_BOX_UVS"):
         exec(open(_em_path).read(), EM)
         if "box_uvs" not in EM or "describe" not in EM:
             EM = {}
+        else:
+            EM["_copy_tex"] = lambda path: os.path.basename(path) if path else None    # no export/tex copies here
     except Exception as e:          # the exporter may expect its own scene layout
         log("export_manifest.py not usable here (%s): UV 0 stays as modelled" % e)
         EM = {}
@@ -157,13 +170,22 @@ def starts(name, prefixes):
     return bool(prefixes) and name.startswith(tuple(prefixes))
 
 
+NORMAL_STRENGTH = {}        # (material, node) -> strength before the bake, restored for the glTF export
+
+
 def prepare_materials():
-    """Flat normals (a normal map baked into the light map doubles with the one the viewer applies) and lamps off."""
+    """Flat normals (a normal map baked into the light map doubles with the one the viewer applies) and lamps off:
+    lamp materials dark, and every light object except the sun hidden (room lights are for the evening)."""
+    if LAMPS_OFF:
+        for ob in bpy.data.objects:
+            if ob.type == "LIGHT" and ob.data.type != "SUN":
+                ob.hide_render = True
     for m in bpy.data.materials:
         if not m.use_nodes or m.node_tree is None:
             continue
         for n in m.node_tree.nodes:
             if n.type == "NORMAL_MAP":
+                NORMAL_STRENGTH[(m.name, n.name)] = n.inputs["Strength"].default_value
                 n.inputs["Strength"].default_value = 0.0
             elif n.type == "BUMP":
                 n.inputs["Strength"].default_value = 0.0
@@ -614,7 +636,43 @@ def basisu(src, dst, kind):
     return dst
 
 
+def prepare_export():
+    """Material state for the glTF export. Box UVs (UV 0) are already in texture tiles, so the Mapping node's
+    1/tile scale must not also go out as KHR_texture_transform (the texture would be scaled twice); and the normal
+    maps flattened for the bake get their strength back (else normalTexture.scale is 0 and the viewer never
+    applies them). glTF still drops Hue/Saturation and Mix tints: grade the images on disk instead.
+    Returns the changed inputs and their bake values: restore_export() puts them back, so the next group's box
+    UVs (which read the Mapping scale) and bake (flat normals) see the bake state again."""
+    saved = []
+    for m in bpy.data.materials:
+        if not m.use_nodes or m.node_tree is None:
+            continue
+        for n in m.node_tree.nodes:
+            if n.type == "MAPPING" and EM:
+                inp, value = n.inputs["Scale"], (1.0, 1.0, 1.0)
+            elif n.type == "NORMAL_MAP":
+                inp, value = n.inputs["Strength"], NORMAL_STRENGTH.get((m.name, n.name), 1.0)
+            else:
+                continue
+            saved.append((inp, tuple(inp.default_value) if n.type == "MAPPING" else inp.default_value))
+            inp.default_value = value
+    return saved
+
+
+def restore_export(saved):
+    for inp, value in saved:
+        inp.default_value = value
+
+
 def export_glb(objs, path):
+    saved = prepare_export()
+    try:
+        _export_glb(objs, path)
+    finally:
+        restore_export(saved)
+
+
+def _export_glb(objs, path):
     bpy.ops.object.select_all(action="DESELECT")
     for ob in objs:
         ob.hide_viewport = False
@@ -634,9 +692,43 @@ def export_glb(objs, path):
     log("wrote %s %.1f MB" % (os.path.relpath(path, OUT), os.path.getsize(path) / 1e6))
 
 
+def doors_from_model():
+    """The "door" property of every leaf (radians) as viewer door data (degrees), plus the DOORS entries."""
+    out = {}
+    for ob in bpy.data.objects:
+        if "door" not in ob.keys():
+            continue
+        d = json.loads(ob["door"]) if isinstance(ob["door"], str) else dict(ob["door"])
+        closed = d.get("closed", 0.0)
+        out[ob.name] = {"hinge": list(d["hinge"]), "open": math.degrees(d["open"]), "closed": math.degrees(closed),
+                        "baked": math.degrees(d.get("baked", closed))}
+    out.update(DOORS)
+    return out
+
+
+def markers_from_model():
+    """The empties stand on the floor (build_template.py, docs/00-interfaces.md); the viewer wants the eye."""
+    def entry(ob, name):
+        x, y, z = ob.matrix_world.translation
+        return {"name": name, "loc": [round(x, 3), round(y, 3), round(z + EYE_HEIGHT, 3)],
+                "yaw": round(math.degrees(ob.matrix_world.to_euler().z), 2)}
+    spots = SPOTS
+    if spots is None:
+        spots = [entry(ob, ob.name[5:]) for ob in sorted(bpy.data.objects, key=lambda o: o.name)
+                 if ob.name.startswith("Spot ")]
+    start = START
+    if start is None:
+        ob = bpy.data.objects.get("Start")
+        start = entry(ob, "Start") if ob else (spots[0] if spots else {"loc": [0.0, 0.0, 1.6], "yaw": 0.0})
+    return start, spots
+
+
 def main():
     for d in (OUT, BUILD, MESH_DIR, LM_DIR):
         os.makedirs(d, exist_ok=True)
+    doors = doors_from_model()
+    start, spots = markers_from_model()
+    log("%d doors, %d spots" % (len(doors), len(spots)))
     setup_cycles()
     prepare_materials()
     made = realize()
@@ -654,8 +746,8 @@ def main():
         for ob in objs:
             prep_uvs(ob)
             ob["lm"] = ""
-            if ob["src"] in DOORS:
-                ob["door"] = DOORS[ob["src"]]
+            if ob["src"] in doors:
+                ob["door"] = doors[ob["src"]]
         baked = [o for o in objs if not is_glass(o) and not dense_decor(o)]
         entry = {"name": group, "file": "mesh/%s.glb" % group}
         if baked:
@@ -682,7 +774,7 @@ def main():
         shutil.copy2(viewer, os.path.join(OUT, "index.html"))
     data = {"units": "model metres, z up (the viewer converts to y up)",
             "groups": [groups[g] for g in GROUPS if g in groups],
-            "start": START, "spots": SPOTS, "floors": FLOORS,
+            "start": start, "spots": spots, "floors": FLOORS, "look": LOOK,
             "labels": "labels.json" if os.path.exists(os.path.join(OUT, "labels.json")) else None}
     json.dump(data, open(scene_path, "w"), indent=1)
     log("done:", scene_path)

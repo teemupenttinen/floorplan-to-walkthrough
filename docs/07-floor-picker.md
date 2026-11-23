@@ -39,7 +39,7 @@ Files: `scripts/web/floorpicker/index.html`, `scripts/web/floorpicker/build_pick
 
 ```sh
 python3 scripts/routes/make_flyins.py                       # route.txt + clips.json
-Blender -b model.blend --python scripts/routes/make_flyins.py -- --check
+blender -b model.blend --python scripts/routes/make_flyins.py -- --check
 scripts/unreal/record.sh fly                                # frames, off-screen
 scripts/video/make_fly_clips.sh <fly frames> [tower.png]    # fly/flyN.mp4, fly/backN.mp4, fly/tower.webp
 scripts/video/make_frames.sh <walk frames> 2                # frames/hi (1600 px), frames/lo (800 px), 12 fps WebP

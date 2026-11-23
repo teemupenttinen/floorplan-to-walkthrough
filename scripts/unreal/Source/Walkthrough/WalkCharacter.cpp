@@ -69,10 +69,9 @@ void AWalkCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	Camera->SetRelativeLocation(FVector(0.f, 0.f, EyeHeight - GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
-	for (TActorIterator<AWalkSun> It(GetWorld()); It; ++It)
+	if (TActorIterator<AWalkSun> It(GetWorld()); It)
 	{
 		Sun = *It;
-		break;
 	}
 	LoadSpots();
 	int32 Level = 2;

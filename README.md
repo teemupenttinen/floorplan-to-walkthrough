@@ -33,12 +33,15 @@ Everything here is generic. Adapt the data tables and the configuration blocks t
 ```text
 scripts/
   blender/   mesh_builder.py  materials.py  build_template.py  export_manifest.py  snapshot_check.py  blender_socket.py
+             plan_overlay.py
+  tools/     plan_probe.py (read raster plans in plan pixels)
+  textures/  make_textures.py  recipes.example.json (scans graded to photo colours)
   unreal/    Python/import_manifest.py  Python/update_running_editor.py  remote_run.py  record.sh  build_and_import.sh
              Source/Walkthrough/ (C++: character, recorder, doors, sun, scatter, scripting helper)
-             Config/DefaultEngine.snippet.ini  Walkthrough.uproject.template
-  routes/    route_lib.py  make_walk_route.py  make_flyins.py
-  video/     encode.sh  make_frames.sh  make_fly_clips.sh  chain_tools.sh  make_control.sh
-  web/       bake_lightmaps.py  serve.py  viewer/index.html  floorpicker/index.html  floorpicker/build_picker_data.py
+             Config/DefaultEngine.snippet.ini  Config/DefaultInput.snippet.ini  Walkthrough.uproject.template
+  routes/    route_lib.py  make_walk_route.py  make_flyins.py  make_photo_stills.py
+  video/     encode.sh  make_frames.sh  make_fly_clips.sh  chain_tools.sh  make_control.sh  compare_sheet.py
+  web/       bake_lightmaps.py  serve.py  shot.mjs  viewer/index.html  floorpicker/index.html  floorpicker/build_picker_data.py
   ai/        make_kit.py  KIT_README.md  templates/*.txt  comfy_client.py  h3_job_example.py
 templates/   CLAUDE.md (project instructions for a coding agent)
 ```
@@ -66,12 +69,25 @@ blender -b work/model.blend --python-exit-code 1 --python $K/web/bake_lightmaps.
 python3 $K/web/serve.py <web output dir> 8768
 ```
 
+## Fastest path: a listing to a walkable page
+
+Browser only, no Unreal, about 45 minutes for a one-storey house (most of it reading the plan); see
+[docs/06](docs/06-web-walkthrough.md#the-fastest-path).
+
+```sh
+ffmpeg -i plan.png -pix_fmt gray plan.pgm && python3 $K/tools/plan_probe.py plan.pgm row=300 col=480   # read the plan
+blender -b --factory-startup --python-exit-code 1 --python build.py -- model.blend                     # your tables
+blender -b model.blend --python $K/blender/plan_overlay.py -- --plan plan.png --px-per-m 54.7 --origin 221 953 --out overlay.png
+blender -b model.blend --python-exit-code 1 --python $K/web/bake_lightmaps.py -- --config bake_config.py
+python3 $K/web/serve.py web 8791 & node $K/web/shot.mjs http://127.0.0.1:8791/ shot.png 2
+```
+
 ## Tools
 
 | Tool | Used for |
 |---|---|
 | Blender 4.2+ (tested with 5.x) | The model, Cycles stills, light-map bakes, route checks |
-| Unreal Engine 5.4+ (tested with 5.8, macOS) | The real-time walkthrough and the recordings. The C++ in this kit has not been compiled as is: expect small fixes per engine version. |
+| Unreal Engine 5.4+ (tested with 5.8, macOS) | The real-time walkthrough and the recordings. The C++ and import compile and run as they are on UE 5.8 with Xcode 27; expect small fixes on other engine versions. |
 | ffmpeg | Encoding, frame sequences, edge control videos, SSIM checks |
 | basisu, gltfpack (optional) | KTX2 textures and meshopt-compressed GLB files for the browser |
 | Chrome + puppeteer-core (optional) | Headless checks of the web pages |
